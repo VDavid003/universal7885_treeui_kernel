@@ -59,6 +59,14 @@ config EXYNOS_DTBH_SUBTYPE_CODE
 	  to determine if the DTB image is valid for
 	  the device that the kernel is booting on.
 
+config EXYNOS_DTBH_MODEL
+	string "Exynos DTBH model number"
+	default "JACKPOTLTE EUR"
+	help
+	  This value is used to filter DTBs included
+	  on platforms where the bootloader may accept
+	  other platform's DTBs.
+
 config EXYNOS_DTBH_PAGE_SIZE
 	int "Exynos DTBH page size"
 	range 2048 131072

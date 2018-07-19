@@ -331,6 +331,7 @@ cmd_dtbtool_exynos = $(objtree)/scripts/dtbtool_exynos/dtbtool \
 		--pagesize $(CONFIG_EXYNOS_DTBH_PAGE_SIZE) \
 		--platform $(CONFIG_EXYNOS_DTBH_PLATFORM_CODE) \
 		--subtype $(CONFIG_EXYNOS_DTBH_SUBTYPE_CODE) \
+		--model $(CONFIG_EXYNOS_DTBH_MODEL) \
 		-o $@ $(sort $(filter-out FORCE,$^))
 
 # cat
