@@ -80,6 +80,9 @@ static int s2mu004_rgb_ramp(struct s2mu004_rgb_drvdata *ddata,
 	int ret = 0;
 	int value;
 	int col = ddata->pdata->col[led];
+    
+	if (! led_enable_fade)
+		led_fade_time_up = led_fade_time_down = LED_RMP_TIME;
 
 	if (ramp_up > led_fade_time_up)
 		ramp_up = ((ramp_up - led_fade_time_up) >> 1) + led_fade_time_up;
@@ -149,20 +152,32 @@ static ssize_t store_s2mu004_rgb_pattern(struct device *dev,
 			ddata->ratio[LED_RED], LED_ALWAYS_ON);
 		break;
 	case CHARGING_ERR:
-		s2mu004_rgb_ramp(ddata, LED_RED, led_fade_time_up, led_fade_time_down);
-		s2mu004_rgb_blink(ddata, LED_RED, 500, 500);
+		if (led_enable_fade) {
+			s2mu004_rgb_ramp(ddata, LED_RED, led_fade_time_up, led_fade_time_down);
+			s2mu004_rgb_blink(ddata, LED_RED, led_fade_time_up, 500);
+		} else {
+			s2mu004_rgb_blink(ddata, LED_RED, 500, 500);
+		}
 		s2mu004_rgb_set_state(ddata, LED_RED,
 			ddata->ratio[LED_RED], LED_BLINK);
 		break;
 	case MISSED_NOTI:
-		s2mu004_rgb_ramp(ddata, LED_BLUE, led_fade_time_up, led_fade_time_down);
-		s2mu004_rgb_blink(ddata, LED_BLUE, 500, 5000);
+		if (led_enable_fade) {
+			s2mu004_rgb_ramp(ddata, LED_BLUE, led_fade_time_up, led_fade_time_down);
+			s2mu004_rgb_blink(ddata, LED_BLUE, led_fade_time_up, 5000);
+		} else {
+			s2mu004_rgb_blink(ddata, LED_BLUE, 500, 5000);
+		}
 		s2mu004_rgb_set_state(ddata, LED_BLUE,
 			ddata->ratio[LED_BLUE], LED_BLINK);
 		break;
 	case LOW_BATTERY:
-		s2mu004_rgb_ramp(ddata, LED_RED, led_fade_time_up, led_fade_time_down);
-		s2mu004_rgb_blink(ddata, LED_RED, 500, 5000);
+		if (led_enable_fade) {
+			s2mu004_rgb_ramp(ddata, LED_RED, led_fade_time_up, led_fade_time_down);
+			s2mu004_rgb_blink(ddata, LED_RED, led_fade_time_up, 5000);
+		} else {
+			s2mu004_rgb_blink(ddata, LED_RED, 500, 5000);
+		}
 		s2mu004_rgb_set_state(ddata, LED_RED,
 			ddata->ratio[LED_RED], LED_BLINK);
 		break;
@@ -171,8 +186,13 @@ static ssize_t store_s2mu004_rgb_pattern(struct device *dev,
 			ddata->ratio[LED_GREEN], LED_ALWAYS_ON);
 		break;
 	case POWERING:
-		s2mu004_rgb_ramp(ddata, LED_GREEN, led_fade_time_up, led_fade_time_down);
-		s2mu004_rgb_blink(ddata, LED_GREEN, 200, 200);
+		if (led_enable_fade) {
+			s2mu004_rgb_ramp(ddata, LED_GREEN, led_fade_time_up, led_fade_time_down);
+			s2mu004_rgb_blink(ddata, LED_GREEN, led_fade_time_up, 5000);
+		} else {
+			s2mu004_rgb_ramp(ddata, LED_GREEN, LED_RMP_TIME, LED_RMP_TIME);
+			s2mu004_rgb_blink(ddata, LED_GREEN, 200, 200);
+		}
 		s2mu004_rgb_set_state(ddata, LED_BLUE,
 			ddata->ratio[LED_BLUE], LED_ALWAYS_ON);
 		s2mu004_rgb_set_state(ddata, LED_GREEN,
@@ -288,7 +308,7 @@ static ssize_t led_fade_store(struct device *dev,
 
 	retval = sscanf(buf, "%1d", &enabled);
 
-	if (retval != 0 && (enabled == 0 || enabled == 1))
+	if (retval && (enabled == 0 || enabled == 1))
 		led_enable_fade = enabled;
 
 	return count;
@@ -312,7 +332,7 @@ static ssize_t led_fade_time_up_store(struct device *dev,
 
 	retval = sscanf(buf, "%d", &val);
 
-	if (retval != 0 && val >= 100  &&  val <= 4000)
+	if (retval && val >= 100  &&  val <= 4000)
 		led_fade_time_up = val;
 
 	return count;
@@ -335,7 +355,7 @@ static ssize_t led_fade_time_down_store(struct device *dev,
 
 	retval = sscanf(buf, "%d", &val);
 
-	if (retval != 0 && val >= 100  &&  val <= 4000)
+	if (retval && val >= 100  &&  val <= 4000)
 		led_fade_time_down = val;
 
 	return count;
