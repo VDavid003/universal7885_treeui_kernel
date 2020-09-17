@@ -610,10 +610,10 @@ struct ion_eventlog {
 void ION_EVENT_SHRINK(struct ion_device *dev, size_t size);
 void ION_EVENT_CLEAR(struct ion_buffer *buffer, ktime_t begin);
 
+#else
 void show_ion_system_heap_size(struct seq_file *s);
 void show_ion_system_heap_pool_size(struct seq_file *s);
 
-#else
 #define ION_EVENT_BEGIN()		do { } while (0)
 #define ION_EVENT_DONE()		do { } while (0)
 #define ION_EVENT_SHRINK(dev, size)	do { } while (0)
