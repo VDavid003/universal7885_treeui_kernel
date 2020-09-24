@@ -380,10 +380,6 @@ static int __check_block_validity(struct inode *inode, const char *func,
 {
 	if (!ext4_data_block_valid(EXT4_SB(inode->i_sb), map->m_pblk,
 				   map->m_len)) {
-		/* for debugging, sangwoo2.lee */
-		printk(KERN_ERR "printing inode..\n");
-		print_block_data(inode->i_sb, 0, (unsigned char *)inode,
-						0, EXT4_INODE_SIZE(inode->i_sb));
 		/* for debugging */
 		ext4_error_inode(inode, func, line, map->m_pblk,
 				 "lblock %lu mapped to illegal pblock %llu "
