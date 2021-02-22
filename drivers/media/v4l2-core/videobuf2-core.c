@@ -205,6 +205,12 @@ static int __vb2_queue_alloc(struct vb2_queue *q, enum vb2_memory memory,
 	struct vb2_buffer *vb;
 	int ret;
 
+	q->timeline_max = 0;
+	q->timeline = sw_sync_timeline_create("vb2");
+	if (!q->timeline) {
+		dprintk(1, "Failed to create timeline\n");
+		return 0;
+	}
 	/* Ensure that q->num_buffers+num_buffers is below VB2_MAX_FRAME */
 	num_buffers = min_t(unsigned int, num_buffers,
 			    VB2_MAX_FRAME - q->num_buffers);
@@ -398,6 +404,12 @@ static int __vb2_queue_free(struct vb2_queue *q, unsigned int buffers)
 		q->memory = 0;
 		INIT_LIST_HEAD(&q->queued_list);
 	}
+
+	if (q->timeline) {
+		sync_timeline_destroy(&q->timeline->obj);
+		q->timeline = NULL;
+	}
+
 	return 0;
 }
 
@@ -884,6 +896,7 @@ void vb2_buffer_done(struct vb2_buffer *vb, enum vb2_buffer_state state)
 		vb->state = state;
 	}
 	atomic_dec(&q->owned_by_drv_count);
+	sw_sync_timeline_inc(q->timeline, 1);
 	spin_unlock_irqrestore(&q->done_lock, flags);
 
 	trace_vb2_buf_done(q, vb);
@@ -958,12 +971,6 @@ static int __qbuf_userptr(struct vb2_buffer *vb, const void *pb)
 		return ret;
 
 	for (plane = 0; plane < vb->num_planes; ++plane) {
-		/* Skip the plane if already verified */
-		if (vb->planes[plane].m.userptr &&
-			vb->planes[plane].m.userptr == planes[plane].m.userptr
-			&& vb->planes[plane].length == planes[plane].length)
-			continue;
-
 		dprintk(3, "userspace address for plane %d changed, "
 				"reacquiring memory\n", plane);
 
@@ -1395,7 +1402,9 @@ int vb2_core_qbuf(struct vb2_queue *q, unsigned int index, void *pb)
 	q->waiting_for_buffers = false;
 	vb->state = VB2_BUF_STATE_QUEUED;
 
-	call_bufop(q, set_timestamp, vb, pb);
+	ret = call_bufop(q, set_timestamp, vb, pb);
+	if (ret)
+		return ret;
 
 	trace_vb2_qbuf(q, vb);
 
@@ -1663,6 +1672,7 @@ EXPORT_SYMBOL_GPL(vb2_core_dqbuf);
  */
 static void __vb2_queue_cancel(struct vb2_queue *q)
 {
+	struct vb2_buffer *vb;
 	unsigned int i;
 
 	/*
@@ -1690,6 +1700,13 @@ static void __vb2_queue_cancel(struct vb2_queue *q)
 	q->start_streaming_called = 0;
 	q->queued_count = 0;
 	q->error = 0;
+
+	list_for_each_entry(vb, &q->queued_list, queued_entry) {
+		if (vb->acquire_fence) {
+			sync_fence_put(vb->acquire_fence);
+			vb->acquire_fence = NULL;
+		}
+	}
 
 	/*
 	 * Remove all buffers from videobuf's list...

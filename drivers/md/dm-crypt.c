@@ -23,15 +23,26 @@
 #include <linux/atomic.h>
 #include <linux/scatterlist.h>
 #include <linux/rbtree.h>
+#include <linux/platform_device.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <asm/page.h>
 #include <asm/unaligned.h>
 #include <crypto/hash.h>
 #include <crypto/md5.h>
 #include <crypto/algapi.h>
+#include <crypto/fmp.h>
 
 #include <linux/device-mapper.h>
 
 #define DM_MSG_PREFIX "crypt"
+
+uint8_t fmp_disk_key[FMP_MAX_KEY_SIZE * 2];
+
+struct exynos_fmp_data {
+	struct exynos_fmp_variant_ops *vops;
+	struct platform_device *pdev;
+};
 
 /*
  * context holding the current state of a multi-part conversion
@@ -119,6 +130,7 @@ enum flags { DM_CRYPT_SUSPENDED, DM_CRYPT_KEY_VALID,
  */
 struct crypt_config {
 	struct dm_dev *dev;
+	struct exynos_fmp_data fmp;
 	sector_t start;
 
 	/*
@@ -139,6 +151,9 @@ struct crypt_config {
 
 	char *cipher;
 	char *cipher_string;
+
+	/* hardware acceleration. 0 : no, 1 : yes */
+	unsigned int hw_fmp;
 
 	struct crypt_iv_operations *iv_gen_ops;
 	union {
@@ -1105,18 +1120,23 @@ static void crypt_endio(struct bio *clone)
 	unsigned rw = bio_data_dir(clone);
 	int error;
 
-	/*
-	 * free the processed pages
-	 */
-	if (rw == WRITE)
-		crypt_free_buffer_pages(cc, clone);
+	if (cc->hw_fmp) {
+		error = clone->bi_error;
+		bio_put(clone);
+	} else {
+		/*
+		 * free the processed pages
+		 */
+		if (rw == WRITE)
+			crypt_free_buffer_pages(cc, clone);
 
-	error = clone->bi_error;
-	bio_put(clone);
+		error = clone->bi_error;
+		bio_put(clone);
 
-	if (rw == READ && !error) {
-		kcryptd_queue_crypt(io);
-		return;
+		if (rw == READ && !error) {
+			kcryptd_queue_crypt(io);
+			return;
+		}
 	}
 
 	if (unlikely(error))
@@ -1133,6 +1153,38 @@ static void clone_init(struct dm_crypt_io *io, struct bio *clone)
 	clone->bi_end_io  = crypt_endio;
 	clone->bi_bdev    = cc->dev->bdev;
 	clone->bi_rw      = io->base_bio->bi_rw;
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	clone->bi_flags   |= io->base_bio->bi_flags & BIO_JOURNAL_TAG_MASK;
+#endif
+}
+
+
+static int kcryptd_io_rw(struct dm_crypt_io *io, gfp_t gfp)
+{
+	struct crypt_config *cc = io->cc;
+	struct bio *clone;
+
+	/*
+	 * The block layer might modify the bvec array, so always
+	 * copy the required bvecs because we need the original
+	 * one in order to decrypt the whole bio data *afterwards*.
+	 */
+	clone = bio_clone_fast(io->base_bio, gfp, cc->bs);
+	if (!clone)
+		return 1;
+
+	crypt_inc_pending(io);
+
+	clone_init(io, clone);
+	clone->private_enc_mode = EXYNOS_FMP_DISK_ENC;
+	clone->private_algo_mode = EXYNOS_FMP_ALGO_MODE_AES_XTS;
+	clone->key = cc->key;
+	clone->key_length = cc->key_size;
+	clone->bi_iter.bi_sector = cc->start + io->sector;
+
+	generic_make_request(clone);
+
+	return 0;
 }
 
 static int kcryptd_io_read(struct dm_crypt_io *io, gfp_t gfp)
@@ -1397,12 +1449,27 @@ static void kcryptd_crypt(struct work_struct *work)
 		kcryptd_crypt_write_convert(io);
 }
 
+static void kcryptd_fmp_io(struct work_struct *work)
+{
+	struct dm_crypt_io *io = container_of(work, struct dm_crypt_io, work);
+
+	crypt_inc_pending(io);
+	if (kcryptd_io_rw(io, GFP_NOIO))
+		io->error = -ENOMEM;
+	crypt_dec_pending(io);
+}
+
 static void kcryptd_queue_crypt(struct dm_crypt_io *io)
 {
 	struct crypt_config *cc = io->cc;
 
-	INIT_WORK(&io->work, kcryptd_crypt);
-	queue_work(cc->crypt_queue, &io->work);
+	if (cc->hw_fmp) {
+		INIT_WORK(&io->work, kcryptd_fmp_io);
+		queue_work(cc->io_queue, &io->work);
+	} else {
+		INIT_WORK(&io->work, kcryptd_crypt);
+		queue_work(cc->crypt_queue, &io->work);
+	}
 }
 
 /*
@@ -1476,12 +1543,40 @@ static int crypt_setkey_allcpus(struct crypt_config *cc)
 	/* Ignore extra keys (which are used for IV etc) */
 	subkey_size = (cc->key_size - cc->key_extra_size) >> ilog2(cc->tfms_count);
 
-	for (i = 0; i < cc->tfms_count; i++) {
-		r = crypto_ablkcipher_setkey(cc->tfms[i],
-					     cc->key + (i * subkey_size),
-					     subkey_size);
-		if (r)
+	if (cc->hw_fmp) {
+		struct fmp_data_setting fmp_data;
+
+		if (!cc->fmp.vops || !cc->fmp.pdev) {
+			err = -ENODEV;
+			return err;
+		}
+
+		if (cc->key_size > FMP_MAX_KEY_SIZE) {
+			pr_err("dm-crypt: Invalid key size(%d)\n", cc->key_size);
+			err = -ENODEV;
+			return err;
+		}
+
+		memcpy(fmp_disk_key, cc->key, cc->key_size);
+		memset(fmp_data.disk.key, 0, FMP_MAX_KEY_SIZE);
+		memcpy(fmp_data.disk.key, fmp_disk_key, cc->key_size);
+		fmp_data.disk.key_size = cc->key_size;
+
+		r = cc->fmp.vops->set_disk_key(cc->fmp.pdev, &fmp_data);
+		if (r) {
+			pr_err("dm-crypt: Fail to set fmp disk key. r(%d)\n", r);
 			err = r;
+			return err;
+		}
+		pr_info("%s: fmp disk key is set\n", __func__);
+	} else {
+		for (i = 0; i < cc->tfms_count; i++) {
+			r = crypto_ablkcipher_setkey(cc->tfms[i],
+						     cc->key + (i * subkey_size),
+						     subkey_size);
+			if (r)
+				err = r;
+		}
 	}
 
 	return err;
@@ -1525,8 +1620,29 @@ static int crypt_wipe_key(struct crypt_config *cc)
 	return crypt_setkey_allcpus(cc);
 }
 
+static int crypt_clear_key(struct crypt_config *cc)
+{
+	int ret = 0;
+	char *disk_key = (char *)fmp_disk_key;
+
+	if (!cc->fmp.vops || !cc->fmp.pdev) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	memset(disk_key, 0, cc->key_size);
+	ret = cc->fmp.vops->clear_disk_key(cc->fmp.pdev);
+	if (ret)
+		pr_err("dm-crypt: Fail to clear disk key. ret(%d)\n", ret);
+
+	pr_info("%s: fmp disk key is clear\n", __func__);
+out:
+	return ret;
+}
+
 static void crypt_dtr(struct dm_target *ti)
 {
+	int r;
 	struct crypt_config *cc = ti->private;
 
 	ti->private = NULL;
@@ -1539,19 +1655,32 @@ static void crypt_dtr(struct dm_target *ti)
 
 	if (cc->io_queue)
 		destroy_workqueue(cc->io_queue);
-	if (cc->crypt_queue)
-		destroy_workqueue(cc->crypt_queue);
+
+	if (!cc->hw_fmp) {
+		if (cc->write_thread) {
+			spin_lock_irq(&cc->write_thread_wait.lock);
+//			set_bit(DM_CRYPT_EXIT_THREAD, &cc->flags);
+			wake_up_locked(&cc->write_thread_wait);
+			spin_unlock_irq(&cc->write_thread_wait.lock);
+			kthread_stop(cc->write_thread);
+		}
+
+		if (cc->crypt_queue)
+			destroy_workqueue(cc->crypt_queue);
+	}
 
 	crypt_free_tfms(cc);
 
 	if (cc->bs)
 		bioset_free(cc->bs);
 
-	mempool_destroy(cc->page_pool);
-	mempool_destroy(cc->req_pool);
+	if (!cc->hw_fmp) {
+		mempool_destroy(cc->page_pool);
+		mempool_destroy(cc->req_pool);
 
-	if (cc->iv_gen_ops && cc->iv_gen_ops->dtr)
-		cc->iv_gen_ops->dtr(cc);
+		if (cc->iv_gen_ops && cc->iv_gen_ops->dtr)
+			cc->iv_gen_ops->dtr(cc);
+	}
 
 	if (cc->dev)
 		dm_put_device(ti, cc->dev);
@@ -1559,8 +1688,86 @@ static void crypt_dtr(struct dm_target *ti)
 	kzfree(cc->cipher);
 	kzfree(cc->cipher_string);
 
+	if (cc->hw_fmp) {
+		r = crypt_clear_key(cc);
+		if (r)
+			pr_err("dm-crypt: Fail to clear fmp key.(%d)\n", r);
+	}
+
 	/* Must zero key material before freeing */
 	kzfree(cc);
+}
+
+static struct exynos_fmp_variant_ops *dm_exynos_fmp_get_vops(void)
+{
+	struct exynos_fmp_variant_ops *fmp_vops = NULL;
+	struct device_node *node;
+
+	node = of_find_compatible_node(NULL, NULL, "samsung,exynos-fmp");
+	if (!node) {
+		pr_err("%s: Fail to find exynos fmp device node\n", __func__);
+		goto out;
+	}
+
+	fmp_vops = exynos_fmp_get_variant_ops(node);
+	if (!fmp_vops)
+		pr_err("%s: Fail to get fmp_vops\n", __func__);
+
+	of_node_put(node);
+out:
+	return fmp_vops;
+}
+
+static struct platform_device *dm_exynos_fmp_get_pdevice(void)
+{
+	struct device_node *node;
+	struct platform_device *fmp_pdev = NULL;
+
+	node = of_find_compatible_node(NULL, NULL, "samsung,exynos-fmp");
+	if (!node) {
+		pr_err("%s: Fail to find exynos fmp device node\n", __func__);
+		goto out;
+	}
+
+	fmp_pdev = exynos_fmp_get_pdevice(node);
+	if (!fmp_pdev)
+		pr_err("%s: Fail to get fmp platform device\n", __func__);
+out:
+	return fmp_pdev;
+}
+
+static int req_crypt_fmp_get_dev(struct crypt_config *cc)
+{
+	int ret = 0;
+
+	if (!cc) {
+		pr_err("%s: Invalid crypt config.\n", __func__);
+		ret = -EINVAL;
+		return ret;
+	}
+
+	cc->fmp.vops = dm_exynos_fmp_get_vops();
+	cc->fmp.pdev = dm_exynos_fmp_get_pdevice();
+
+	if (cc->fmp.pdev == ERR_PTR(-EPROBE_DEFER)) {
+		pr_err("%s: FMP device not probed yet\n", __func__);
+		ret = -EPROBE_DEFER;
+		goto err;
+	}
+
+	if (!cc->fmp.pdev || !cc->fmp.vops) {
+		pr_err("%s: Invalid platform device %p or vops %p\n",
+				__func__, cc->fmp.pdev, cc->fmp.vops);
+		ret = -ENODEV;
+		goto err;
+	}
+
+	return 0;
+err:
+	cc->fmp.pdev = NULL;
+	cc->fmp.vops = NULL;
+
+	return ret;
 }
 
 static int crypt_ctr_cipher(struct dm_target *ti,
@@ -1636,81 +1843,114 @@ static int crypt_ctr_cipher(struct dm_target *ti,
 		goto bad_mem;
 	}
 
-	/* Allocate cipher */
-	ret = crypt_alloc_tfms(cc, cipher_api);
-	if (ret < 0) {
-		ti->error = "Error allocating crypto tfm";
-		goto bad;
-	}
-
-	/* Initialize IV */
-	cc->iv_size = crypto_ablkcipher_ivsize(any_tfm(cc));
-	if (cc->iv_size)
-		/* at least a 64 bit sector number should fit in our buffer */
-		cc->iv_size = max(cc->iv_size,
-				  (unsigned int)(sizeof(u64) / sizeof(u8)));
-	else if (ivmode) {
-		DMWARN("Selected cipher does not support IVs");
-		ivmode = NULL;
-	}
-
-	/* Choose ivmode, see comments at iv code. */
-	if (ivmode == NULL)
-		cc->iv_gen_ops = NULL;
-	else if (strcmp(ivmode, "plain") == 0)
-		cc->iv_gen_ops = &crypt_iv_plain_ops;
-	else if (strcmp(ivmode, "plain64") == 0)
-		cc->iv_gen_ops = &crypt_iv_plain64_ops;
-	else if (strcmp(ivmode, "essiv") == 0)
-		cc->iv_gen_ops = &crypt_iv_essiv_ops;
-	else if (strcmp(ivmode, "benbi") == 0)
-		cc->iv_gen_ops = &crypt_iv_benbi_ops;
-	else if (strcmp(ivmode, "null") == 0)
-		cc->iv_gen_ops = &crypt_iv_null_ops;
-	else if (strcmp(ivmode, "lmk") == 0) {
-		cc->iv_gen_ops = &crypt_iv_lmk_ops;
-		/*
-		 * Version 2 and 3 is recognised according
-		 * to length of provided multi-key string.
-		 * If present (version 3), last key is used as IV seed.
-		 * All keys (including IV seed) are always the same size.
-		 */
-		if (cc->key_size % cc->key_parts) {
-			cc->key_parts++;
-			cc->key_extra_size = cc->key_size / cc->key_parts;
-		}
-	} else if (strcmp(ivmode, "tcw") == 0) {
-		cc->iv_gen_ops = &crypt_iv_tcw_ops;
-		cc->key_parts += 2; /* IV + whitening */
-		cc->key_extra_size = cc->iv_size + TCW_WHITENING_SIZE;
-	} else {
+	if (!cipher) {
+		ti->error = "Error Invalid cipher";
 		ret = -EINVAL;
-		ti->error = "Invalid IV mode";
 		goto bad;
 	}
 
-	/* Initialize and set key */
-	ret = crypt_set_key(cc, key);
-	if (ret < 0) {
-		ti->error = "Error decoding and setting key";
-		goto bad;
-	}
-
-	/* Allocate IV */
-	if (cc->iv_gen_ops && cc->iv_gen_ops->ctr) {
-		ret = cc->iv_gen_ops->ctr(cc, ti, ivopts);
-		if (ret < 0) {
-			ti->error = "Error creating IV";
+	if ((strcmp(chainmode, "xts") == 0) &&
+			(strcmp(cipher, "aes") == 0) &&
+			((strcmp(ivmode, "fmp") == 0) || (strcmp(ivmode, "disk") == 0))) {
+		ret = req_crypt_fmp_get_dev(cc);
+		if (ret) {
+			ti->error = "Cannot get FMP device";
 			goto bad;
 		}
-	}
 
-	/* Initialize IV (set keys for ESSIV etc) */
-	if (cc->iv_gen_ops && cc->iv_gen_ops->init) {
-		ret = cc->iv_gen_ops->init(cc);
-		if (ret < 0) {
-			ti->error = "Error initialising IV";
+		pr_info("%s: H/W FMP disk encryption\n", __func__);
+		cc->hw_fmp = 1;
+
+		/* Initialize max_io_len */
+		ret = dm_set_target_max_io_len(ti, 1024);
+		if (ret < 0)
 			goto bad;
+
+		/* Initialize and set key */
+		ret = crypt_set_key(cc, key);
+		if (ret < 0) {
+			ti->error = "Error decoding and setting key";
+			goto bad;
+		}
+	} else {
+		pr_info("%s: S/W disk encryption\n", __func__);
+
+		/* Allocate cipher */
+		ret = crypt_alloc_tfms(cc, cipher_api);
+		if (ret < 0) {
+			ti->error = "Error allocating crypto tfm";
+			goto bad;
+		}
+
+		/* Initialize IV */
+		cc->iv_size = crypto_ablkcipher_ivsize(any_tfm(cc));
+		if (cc->iv_size)
+			/* at least a 64 bit sector number should fit in our buffer */
+			cc->iv_size = max(cc->iv_size,
+					  (unsigned int)(sizeof(u64) / sizeof(u8)));
+		else if (ivmode) {
+			DMWARN("Selected cipher does not support IVs");
+			ivmode = NULL;
+		}
+
+		/* Choose ivmode, see comments at iv code. */
+		if (ivmode == NULL)
+			cc->iv_gen_ops = NULL;
+		else if (strcmp(ivmode, "plain") == 0)
+			cc->iv_gen_ops = &crypt_iv_plain_ops;
+		else if (strcmp(ivmode, "plain64") == 0)
+			cc->iv_gen_ops = &crypt_iv_plain64_ops;
+		else if (strcmp(ivmode, "essiv") == 0)
+			cc->iv_gen_ops = &crypt_iv_essiv_ops;
+		else if (strcmp(ivmode, "benbi") == 0)
+			cc->iv_gen_ops = &crypt_iv_benbi_ops;
+		else if (strcmp(ivmode, "null") == 0)
+			cc->iv_gen_ops = &crypt_iv_null_ops;
+		else if (strcmp(ivmode, "lmk") == 0) {
+			cc->iv_gen_ops = &crypt_iv_lmk_ops;
+			/*
+			 * Version 2 and 3 is recognised according
+			 * to length of provided multi-key string.
+			 * If present (version 3), last key is used as IV seed.
+			 * All keys (including IV seed) are always the same size.
+			 */
+			if (cc->key_size % cc->key_parts) {
+				cc->key_parts++;
+				cc->key_extra_size = cc->key_size / cc->key_parts;
+			}
+		} else if (strcmp(ivmode, "tcw") == 0) {
+			cc->iv_gen_ops = &crypt_iv_tcw_ops;
+			cc->key_parts += 2; /* IV + whitening */
+			cc->key_extra_size = cc->iv_size + TCW_WHITENING_SIZE;
+		} else {
+			ret = -EINVAL;
+			ti->error = "Invalid IV mode";
+			goto bad;
+		}
+
+		/* Initialize and set key */
+		ret = crypt_set_key(cc, key);
+		if (ret < 0) {
+			ti->error = "Error decoding and setting key";
+			goto bad;
+		}
+
+		/* Allocate IV */
+		if (cc->iv_gen_ops && cc->iv_gen_ops->ctr) {
+			ret = cc->iv_gen_ops->ctr(cc, ti, ivopts);
+			if (ret < 0) {
+				ti->error = "Error creating IV";
+				goto bad;
+			}
+		}
+
+		/* Initialize IV (set keys for ESSIV etc) */
+		if (cc->iv_gen_ops && cc->iv_gen_ops->init) {
+			ret = cc->iv_gen_ops->init(cc);
+			if (ret < 0) {
+				ti->error = "Error initialising IV";
+				goto bad;
+			}
 		}
 	}
 
@@ -1762,40 +2002,45 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (ret < 0)
 		goto bad;
 
-	cc->dmreq_start = sizeof(struct ablkcipher_request);
-	cc->dmreq_start += crypto_ablkcipher_reqsize(any_tfm(cc));
-	cc->dmreq_start = ALIGN(cc->dmreq_start, __alignof__(struct dm_crypt_request));
-
-	if (crypto_ablkcipher_alignmask(any_tfm(cc)) < CRYPTO_MINALIGN) {
-		/* Allocate the padding exactly */
-		iv_size_padding = -(cc->dmreq_start + sizeof(struct dm_crypt_request))
-				& crypto_ablkcipher_alignmask(any_tfm(cc));
+	if (cc->hw_fmp) {
+		cc->per_bio_data_size = ti->per_bio_data_size =
+			ALIGN(sizeof(struct dm_crypt_io), ARCH_KMALLOC_MINALIGN);
 	} else {
-		/*
-		 * If the cipher requires greater alignment than kmalloc
-		 * alignment, we don't know the exact position of the
-		 * initialization vector. We must assume worst case.
-		 */
-		iv_size_padding = crypto_ablkcipher_alignmask(any_tfm(cc));
-	}
+		cc->dmreq_start = sizeof(struct ablkcipher_request);
+		cc->dmreq_start += crypto_ablkcipher_reqsize(any_tfm(cc));
+		cc->dmreq_start = ALIGN(cc->dmreq_start, __alignof__(struct dm_crypt_request));
 
-	ret = -ENOMEM;
-	cc->req_pool = mempool_create_kmalloc_pool(MIN_IOS, cc->dmreq_start +
-			sizeof(struct dm_crypt_request) + iv_size_padding + cc->iv_size);
-	if (!cc->req_pool) {
-		ti->error = "Cannot allocate crypt request mempool";
-		goto bad;
-	}
+		if (crypto_ablkcipher_alignmask(any_tfm(cc)) < CRYPTO_MINALIGN) {
+			/* Allocate the padding exactly */
+			iv_size_padding = -(cc->dmreq_start + sizeof(struct dm_crypt_request))
+					& crypto_ablkcipher_alignmask(any_tfm(cc));
+		} else {
+			/*
+			 * If the cipher requires greater alignment than kmalloc
+			 * alignment, we don't know the exact position of the
+			 * initialization vector. We must assume worst case.
+			 */
+			iv_size_padding = crypto_ablkcipher_alignmask(any_tfm(cc));
+		}
 
-	cc->per_bio_data_size = ti->per_bio_data_size =
-		ALIGN(sizeof(struct dm_crypt_io) + cc->dmreq_start +
-		      sizeof(struct dm_crypt_request) + iv_size_padding + cc->iv_size,
-		      ARCH_KMALLOC_MINALIGN);
+		ret = -ENOMEM;
+		cc->req_pool = mempool_create_kmalloc_pool(MIN_IOS, cc->dmreq_start +
+				sizeof(struct dm_crypt_request) + iv_size_padding + cc->iv_size);
+		if (!cc->req_pool) {
+			ti->error = "Cannot allocate crypt request mempool";
+			goto bad;
+		}
 
-	cc->page_pool = mempool_create_page_pool(BIO_MAX_PAGES, 0);
-	if (!cc->page_pool) {
-		ti->error = "Cannot allocate page mempool";
-		goto bad;
+		cc->per_bio_data_size = ti->per_bio_data_size =
+			ALIGN(sizeof(struct dm_crypt_io) + cc->dmreq_start +
+			      sizeof(struct dm_crypt_request) + iv_size_padding + cc->iv_size,
+			      ARCH_KMALLOC_MINALIGN);
+
+		cc->page_pool = mempool_create_page_pool(BIO_MAX_PAGES, 0);
+		if (!cc->page_pool) {
+			ti->error = "Cannot allocate page mempool";
+			goto bad;
+		}
 	}
 
 	cc->bs = bioset_create(MIN_IOS, 0);
@@ -1806,12 +2051,14 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	mutex_init(&cc->bio_alloc_lock);
 
-	ret = -EINVAL;
-	if (sscanf(argv[2], "%llu%c", &tmpll, &dummy) != 1) {
-		ti->error = "Invalid iv_offset sector";
-		goto bad;
+	if (!cc->hw_fmp) {
+		ret = -EINVAL;
+		if (sscanf(argv[2], "%llu%c", &tmpll, &dummy) != 1) {
+			ti->error = "Invalid iv_offset sector";
+			goto bad;
+		}
+		cc->iv_offset = tmpll;
 	}
-	cc->iv_offset = tmpll;
 
 	ret = dm_get_device(ti, argv[3], dm_table_get_mode(ti->table), &cc->dev);
 	if (ret) {
@@ -1863,36 +2110,55 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	ret = -ENOMEM;
-	cc->io_queue = alloc_workqueue("kcryptd_io", WQ_MEM_RECLAIM, 1);
+	if (cc->hw_fmp) {
+		cc->io_queue = alloc_workqueue("kcryptd_fmp_io",
+						WQ_HIGHPRI |
+						WQ_MEM_RECLAIM,
+						1);
+	} else {
+		cc->io_queue = alloc_workqueue("kcryptd_io",
+						WQ_HIGHPRI |
+						WQ_MEM_RECLAIM,
+						1);
+	}
+
 	if (!cc->io_queue) {
 		ti->error = "Couldn't create kcryptd io queue";
 		goto bad;
 	}
 
-	if (test_bit(DM_CRYPT_SAME_CPU, &cc->flags))
-		cc->crypt_queue = alloc_workqueue("kcryptd", WQ_CPU_INTENSIVE | WQ_MEM_RECLAIM, 1);
-	else
-		cc->crypt_queue = alloc_workqueue("kcryptd", WQ_CPU_INTENSIVE | WQ_MEM_RECLAIM | WQ_UNBOUND,
-						  num_online_cpus());
-	if (!cc->crypt_queue) {
-		ti->error = "Couldn't create kcryptd queue";
-		goto bad;
-	}
+	if (!cc->hw_fmp) {
+		if (test_bit(DM_CRYPT_SAME_CPU, &cc->flags))
+			cc->crypt_queue = alloc_workqueue("kcryptd",
+							  WQ_HIGHPRI |
+							  WQ_MEM_RECLAIM, 1);
+		else
+			cc->crypt_queue = alloc_workqueue("kcryptd",
+							  WQ_HIGHPRI |
+							  WQ_MEM_RECLAIM |
+							  WQ_UNBOUND,
+							  num_online_cpus());
+		if (!cc->crypt_queue) {
+			ti->error = "Couldn't create kcryptd queue";
+			goto bad;
+		}
 
-	init_waitqueue_head(&cc->write_thread_wait);
-	cc->write_tree = RB_ROOT;
+		init_waitqueue_head(&cc->write_thread_wait);
+		cc->write_tree = RB_ROOT;
 
-	cc->write_thread = kthread_create(dmcrypt_write, cc, "dmcrypt_write");
-	if (IS_ERR(cc->write_thread)) {
-		ret = PTR_ERR(cc->write_thread);
-		cc->write_thread = NULL;
-		ti->error = "Couldn't spawn write thread";
-		goto bad;
+		cc->write_thread = kthread_create(dmcrypt_write, cc, "dmcrypt_write");
+		if (IS_ERR(cc->write_thread)) {
+			ret = PTR_ERR(cc->write_thread);
+			cc->write_thread = NULL;
+			ti->error = "Couldn't spawn write thread";
+			goto bad;
+		}
+		wake_up_process(cc->write_thread);
 	}
-	wake_up_process(cc->write_thread);
 
 	ti->num_flush_bios = 1;
 	ti->discard_zeroes_data_unsupported = true;
+	ti->num_discard_bios = 1;
 
 	return 0;
 
@@ -1911,7 +2177,9 @@ static int crypt_map(struct dm_target *ti, struct bio *bio)
 	 * - for REQ_FLUSH device-mapper core ensures that no IO is in-flight
 	 * - for REQ_DISCARD caller must use flush if IO ordering matters
 	 */
-	if (unlikely(bio->bi_rw & (REQ_FLUSH | REQ_DISCARD))) {
+
+	if (unlikely(bio->bi_rw & (REQ_FLUSH | REQ_DISCARD) ||
+		bio_flagged(bio, BIO_BYPASS))) {
 		bio->bi_bdev = cc->dev->bdev;
 		if (bio_sectors(bio))
 			bio->bi_iter.bi_sector = cc->start +
@@ -1930,11 +2198,16 @@ static int crypt_map(struct dm_target *ti, struct bio *bio)
 	crypt_io_init(io, cc, bio, dm_target_offset(ti, bio->bi_iter.bi_sector));
 	io->ctx.req = (struct ablkcipher_request *)(io + 1);
 
-	if (bio_data_dir(io->base_bio) == READ) {
-		if (kcryptd_io_read(io, GFP_NOWAIT))
-			kcryptd_queue_read(io);
-	} else
-		kcryptd_queue_crypt(io);
+	if (cc->hw_fmp) {
+		if (kcryptd_io_rw(io, GFP_NOWAIT))
+			kcryptd_queue_crypt(io);
+	} else {
+		if (bio_data_dir(io->base_bio) == READ) {
+			if (kcryptd_io_read(io, GFP_NOWAIT))
+				kcryptd_queue_read(io);
+		} else
+			kcryptd_queue_crypt(io);
+	}
 
 	return DM_MAPIO_SUBMITTED;
 }
@@ -2056,6 +2329,8 @@ static int crypt_iterate_devices(struct dm_target *ti,
 
 static void crypt_io_hints(struct dm_target *ti, struct queue_limits *limits)
 {
+	struct crypt_config *cc = ti->private;
+
 	/*
 	 * Unfortunate constraint that is required to avoid the potential
 	 * for exceeding underlying device's max_segments limits -- due to
@@ -2063,6 +2338,8 @@ static void crypt_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	 * bio that are not as physically contiguous as the original bio.
 	 */
 	limits->max_segment_size = PAGE_SIZE;
+	if (cc->hw_fmp)
+		limits->logical_block_size = PAGE_SIZE;
 }
 
 static struct target_type crypt_target = {

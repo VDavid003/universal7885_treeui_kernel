@@ -35,6 +35,10 @@
 #define COMPAT_PTRACE_GETHBPREGS	29
 #define COMPAT_PTRACE_SETHBPREGS	30
 
+/* AArch64 CPSR bits */
+#define CPSR_MODE_MASK		0x0000000f
+#define CPSR_MODE_USR		0x00000000
+
 /* AArch32 CPSR bits */
 #define COMPAT_PSR_MODE_MASK	0x0000001f
 #define COMPAT_PSR_MODE_USR	0x00000010
@@ -116,7 +120,14 @@ struct pt_regs {
 		};
 	};
 	u64 orig_x0;
-	u64 syscallno;
+#ifdef __AARCH64EB__
+	u32 unused2;
+	s32 syscallno;
+#else
+	s32 syscallno;
+	u32 unused2;
+#endif
+
 	u64 orig_addr_limit;
 	u64 unused;	// maintain 16 byte alignment
 };

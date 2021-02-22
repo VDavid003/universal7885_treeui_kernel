@@ -24,7 +24,7 @@
 
 #define MMC_OPS_TIMEOUT_MS	(10 * 60 * 1000) /* 10 minute timeout */
 
-static const u8 tuning_blk_pattern_4bit[] = {
+const u8 tuning_blk_pattern_4bit[] = {
 	0xff, 0x0f, 0xff, 0x00, 0xff, 0xcc, 0xc3, 0xcc,
 	0xc3, 0x3c, 0xcc, 0xff, 0xfe, 0xff, 0xfe, 0xef,
 	0xff, 0xdf, 0xff, 0xdd, 0xff, 0xfb, 0xff, 0xfb,
@@ -35,7 +35,7 @@ static const u8 tuning_blk_pattern_4bit[] = {
 	0xbb, 0xff, 0xf7, 0xff, 0xf7, 0x7f, 0x7b, 0xde,
 };
 
-static const u8 tuning_blk_pattern_8bit[] = {
+const u8 tuning_blk_pattern_8bit[] = {
 	0xff, 0xff, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00,
 	0xff, 0xff, 0xcc, 0xcc, 0xcc, 0x33, 0xcc, 0xcc,
 	0xcc, 0x33, 0x33, 0xcc, 0xcc, 0xcc, 0xff, 0xff,
@@ -466,6 +466,45 @@ int mmc_switch_status_error(struct mmc_host *host, u32 status)
 }
 
 /**
+ *	mmc_prepare_switch - helper; prepare to modify EXT_CSD register
+ *	@card: the MMC card associated with the data transfer
+ *	@set: cmd set values
+ *	@index: EXT_CSD register index
+ *	@value: value to program into EXT_CSD register
+ *	@tout_ms: timeout (ms) for operation performed by register write,
+ *                   timeout of zero implies maximum possible timeout
+ *	@use_busy_signal: use the busy signal as response type
+ *
+ *	Helper to prepare to modify EXT_CSD register for selected card.
+ */
+
+static inline void mmc_prepare_switch(struct mmc_command *cmd, u8 index,
+				      u8 value, u8 set, unsigned int tout_ms,
+				      bool use_busy_signal)
+{
+	cmd->opcode = MMC_SWITCH;
+	cmd->arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24) |
+		  (index << 16) |
+		  (value << 8) |
+		  set;
+	cmd->flags = MMC_CMD_AC;
+	cmd->busy_timeout = tout_ms;
+	if (use_busy_signal)
+		cmd->flags |= MMC_RSP_SPI_R1B | MMC_RSP_R1B;
+	else
+		cmd->flags |= MMC_RSP_SPI_R1 | MMC_RSP_R1;
+}
+
+int __mmc_switch_cmdq_mode(struct mmc_command *cmd, u8 set, u8 index, u8 value,
+			   unsigned int timeout_ms, bool use_busy_signal,
+			   bool ignore_timeout)
+{
+	mmc_prepare_switch(cmd, index, value, set, timeout_ms, use_busy_signal);
+	return 0;
+}
+EXPORT_SYMBOL(__mmc_switch_cmdq_mode);
+
+/**
  *	__mmc_switch - modify EXT_CSD register
  *	@card: the MMC card associated with the data transfer
  *	@set: cmd set values
@@ -489,6 +528,7 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 	unsigned long timeout;
 	u32 status = 0;
 	bool use_r1b_resp = use_busy_signal;
+	int retries = 5;
 
 	mmc_retune_hold(host);
 
@@ -502,12 +542,8 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		(timeout_ms > host->max_busy_timeout))
 		use_r1b_resp = false;
 
-	cmd.opcode = MMC_SWITCH;
-	cmd.arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24) |
-		  (index << 16) |
-		  (value << 8) |
-		  set;
-	cmd.flags = MMC_CMD_AC;
+	mmc_prepare_switch(&cmd, index, value, set, timeout_ms,
+			   use_r1b_resp);
 	if (use_r1b_resp) {
 		cmd.flags |= MMC_RSP_SPI_R1B | MMC_RSP_R1B;
 		/*
@@ -566,9 +602,15 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 
 		/* Timeout if the device never leaves the program state. */
 		if (time_after(jiffies, timeout)) {
-			pr_err("%s: Card stuck in programming state! %s\n",
-				mmc_hostname(host), __func__);
-			err = -ETIMEDOUT;
+			pr_err("%s: Card stuck in programming state! %s, timeout:%ums, retries:%d\n",
+				mmc_hostname(host), __func__,
+				timeout_ms, retries);
+			if (retries)
+				timeout = jiffies +
+						msecs_to_jiffies(timeout_ms);
+			else
+				err = -ETIMEDOUT;
+			retries--;
 			goto out;
 		}
 	} while (R1_CURRENT_STATE(status) == R1_STATE_PRG);
@@ -794,3 +836,21 @@ int mmc_can_ext_csd(struct mmc_card *card)
 {
 	return (card && card->csd.mmca_vsn > CSD_SPEC_VER_3);
 }
+
+int mmc_discard_queue(struct mmc_host *host, u32 tasks)
+{
+	struct mmc_command cmd = {0};
+
+	cmd.opcode = MMC_CMDQ_TASK_MGMT;
+	if (tasks) {
+		cmd.arg = DISCARD_TASK;
+		cmd.arg |= (tasks << 16);
+	} else {
+		cmd.arg = DISCARD_QUEUE;
+	}
+
+	cmd.flags = MMC_RSP_R1B | MMC_CMD_AC;
+
+	return mmc_wait_for_cmd(host, &cmd, 0);
+}
+EXPORT_SYMBOL(mmc_discard_queue);

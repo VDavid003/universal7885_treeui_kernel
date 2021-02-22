@@ -14,6 +14,19 @@
 #include <linux/mmc/core.h>
 #include <linux/mod_devicetable.h>
 
+#define MMC_CARD_CMDQ_BLK_SIZE 512
+#define MAX_CNT_U64	0xFFFFFFFFFF
+#define MAX_CNT_U32	0x7FFFFFFF
+#define STATUS_MASK	(R1_ERROR | R1_CC_ERROR | R1_CARD_ECC_FAILED | R1_WP_VIOLATION | R1_OUT_OF_RANGE)
+
+/* Only [0:4] bits in response are reserved. The other bits shouldn't be used */
+#define HALT_UNHALT_ERR		0x00000001
+#define CQ_EN_DIS_ERR		0x00000002
+#define RPMB_SWITCH_ERR		0x00000004
+#define CQ_HW_RST			0x00000008
+#define CQERR_MASK	(HALT_UNHALT_ERR | CQ_EN_DIS_ERR | RPMB_SWITCH_ERR | CQ_HW_RST)
+
+
 struct mmc_cid {
 	unsigned int		manfid;
 	char			prod_name[8];
@@ -52,6 +65,7 @@ struct mmc_ext_csd {
 	u8			sec_feature_support;
 	u8			rel_sectors;
 	u8			rel_param;
+	bool			enhanced_rpmb_supported;
 	u8			part_config;
 	u8			cache_ctrl;
 	u8			rst_n_function;
@@ -88,6 +102,8 @@ struct mmc_ext_csd {
 	unsigned int            data_tag_unit_size;     /* DATA TAG UNIT size */
 	unsigned int		boot_ro_lock;		/* ro lock support */
 	bool			boot_ro_lockable;
+	u8			raw_ext_csd_cmdq;	/* 15 */
+
 	bool			ffu_capable;	/* Firmware upgrade support */
 #define MMC_FIRMWARE_LEN 8
 	u8			fwrev[MMC_FIRMWARE_LEN];  /* FW version */
@@ -95,6 +111,10 @@ struct mmc_ext_csd {
 	u8			raw_partition_support;	/* 160 */
 	u8			raw_rpmb_size_mult;	/* 168 */
 	u8			raw_erased_mem_count;	/* 181 */
+	u8			raw_ext_csd_bus_width;	/* 183 */
+	u8			enhanced_strobe_support;	/* 184 */
+#define MMC_STROBE_ENHANCED_SUPPORT	BIT(0)
+	u8			raw_ext_csd_hs_timing;	/* 185 */
 	u8			raw_ext_csd_structure;	/* 194 */
 	u8			raw_card_type;		/* 196 */
 	u8			raw_driver_strength;	/* 197 */
@@ -116,9 +136,17 @@ struct mmc_ext_csd {
 	u8			raw_pwr_cl_ddr_52_195;	/* 238 */
 	u8			raw_pwr_cl_ddr_52_360;	/* 239 */
 	u8			raw_pwr_cl_ddr_200_360;	/* 253 */
+	u8			cache_flush_policy;	/* 240 */
 	u8			raw_bkops_status;	/* 246 */
 	u8			raw_sectors[4];		/* 212 - 4 bytes */
-
+	u8			cmdq_depth;		/* 307 */
+	u8			cmdq_support;		/* 308 */
+	u8			barrier_support;	/* 486 */
+	u8			barrier_en;
+	u8			pre_eol_info;		/* 267 */
+	u8			device_life_time_est_typ_a;	/* 268 */
+	u8			device_life_time_est_typ_b;	/* 269 */
+	u32			fw_version;		/* 254 */
 	unsigned int            feature_support;
 #define MMC_DISCARD_FEATURE	BIT(0)                  /* CMD38 feature */
 };
@@ -242,6 +270,27 @@ struct mmc_part {
 #define MMC_BLK_DATA_AREA_RPMB	(1<<3)
 };
 
+#define MMC_QUIRK_CMDQ_DELAY_BEFORE_DCMD 6 /* microseconds */
+
+struct mmc_card_error_log {
+	char    type[4];        // sbc, cmd, data, stop
+	int     err_type;
+	u32     status;
+	u64     first_issue_time;
+	u64     last_issue_time;
+	u32     count;
+	u32		ge_cnt;			// status[19] : general error or unknown error_count
+	u32		cc_cnt;			// status[20] : internal card controller error_count
+	u32		ecc_cnt;		// status[21] : ecc error_count
+	u32		wp_cnt;			// status[26] : write protection error_count
+	u32		oor_cnt;		// status[31] : out of range error
+	u32		noti_cnt;		// uevent notification count
+	u32		halt_cnt;		// cq halt / unhalt fail
+	u32		cq_cnt;			// cq enable / disable fail
+	u32		rpmb_cnt;		// RPMB switch fail
+	u32		hw_rst_cnt;		// reset count
+};
+
 /*
  * MMC device
  */
@@ -263,6 +312,7 @@ struct mmc_card {
 #define MMC_CARD_REMOVED	(1<<4)		/* card has been removed */
 #define MMC_STATE_DOING_BKOPS	(1<<5)		/* card is doing BKOPS */
 #define MMC_STATE_SUSPENDED	(1<<6)		/* card is suspended */
+#define MMC_STATE_CMDQ		(1<<12)         /* card is in cmd queue mode */
 	unsigned int		quirks; 	/* card quirks */
 #define MMC_QUIRK_LENIENT_FN0	(1<<0)		/* allow SDIO FN0 writes outside of the VS CCCR range */
 #define MMC_QUIRK_BLKSZ_FOR_BYTE_MODE (1<<1)	/* use func->cur_blksize */
@@ -279,7 +329,13 @@ struct mmc_card {
 #define MMC_QUIRK_SEC_ERASE_TRIM_BROKEN (1<<10)	/* Skip secure for erase/trim */
 #define MMC_QUIRK_BROKEN_IRQ_POLLING	(1<<11)	/* Polling SDIO_CCCR_INTx could create a fake interrupt */
 #define MMC_QUIRK_TRIM_BROKEN	(1<<12)		/* Skip trim */
+#define MMC_QUIRK_CACHE_DISABLE (1 << 13)	/* prevent cache enable */
 
+/* Make sure CMDQ is empty before queuing DCMD */
+#define MMC_QUIRK_CMDQ_EMPTY_BEFORE_DCMD (1 << 17)
+
+/* Needs busy_wait W/A */
+#define MMC_QUIRK_CMDQ_NEED_BUSYWAIT (1 << 18)
 
 	unsigned int		erase_size;	/* erase size in sectors */
  	unsigned int		erase_shift;	/* if erase unit is power 2 */
@@ -313,6 +369,15 @@ struct mmc_card {
 	struct dentry		*debugfs_root;
 	struct mmc_part	part[MMC_NUM_PHY_PARTITION]; /* physical partitions */
 	unsigned int    nr_parts;
+	unsigned int	part_curr;
+	u8 en_strobe_enhanced;	/*enhanced strobe ctrl */
+	bool cmdq_init;
+
+	struct device_attribute error_count;
+	struct mmc_card_error_log err_log[10];
+#if defined(CONFIG_MMC_CQ_HCI) && defined(CONFIG_MMC_DATA_LOG)
+	atomic_t	log_count;
+#endif
 };
 
 /*
@@ -431,6 +496,7 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_removed(c)	((c) && ((c)->state & MMC_CARD_REMOVED))
 #define mmc_card_doing_bkops(c)	((c)->state & MMC_STATE_DOING_BKOPS)
 #define mmc_card_suspended(c)	((c)->state & MMC_STATE_SUSPENDED)
+#define mmc_card_cmdq(c)       ((c)->state & MMC_STATE_CMDQ)
 
 #define mmc_card_set_present(c)	((c)->state |= MMC_STATE_PRESENT)
 #define mmc_card_set_readonly(c) ((c)->state |= MMC_STATE_READONLY)
@@ -441,6 +507,8 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_clr_doing_bkops(c)	((c)->state &= ~MMC_STATE_DOING_BKOPS)
 #define mmc_card_set_suspended(c) ((c)->state |= MMC_STATE_SUSPENDED)
 #define mmc_card_clr_suspended(c) ((c)->state &= ~MMC_STATE_SUSPENDED)
+#define mmc_card_set_cmdq(c)           ((c)->state |= MMC_STATE_CMDQ)
+#define mmc_card_clr_cmdq(c)           ((c)->state &= ~MMC_STATE_CMDQ)
 
 /*
  * Quirk add/remove for MMC products.
@@ -516,6 +584,9 @@ static inline int mmc_card_broken_irq_polling(const struct mmc_card *c)
 
 #define mmc_dev_to_card(d)	container_of(d, struct mmc_card, dev)
 
+#define mmc_get_drvdata(c)	dev_get_drvdata(&(c)->dev)
+#define mmc_set_drvdata(c,d)	dev_set_drvdata(&(c)->dev, d)
+
 /*
  * MMC device driver (e.g., Flash card, I/O card...)
  */
@@ -531,5 +602,7 @@ extern void mmc_unregister_driver(struct mmc_driver *);
 
 extern void mmc_fixup_device(struct mmc_card *card,
 			     const struct mmc_fixup *table);
-
+extern void mmc_blk_cmdq_req_done(struct mmc_request *mrq);
+extern void mmc_cmdq_error_logging(struct mmc_card *card,
+		struct mmc_cmdq_req *cqrq, u32 status);
 #endif /* LINUX_MMC_CARD_H */

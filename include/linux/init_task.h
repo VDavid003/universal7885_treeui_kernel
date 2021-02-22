@@ -14,6 +14,9 @@
 #include <linux/rbtree.h>
 #include <net/net_namespace.h>
 #include <linux/sched/rt.h>
+#include <linux/task_integrity.h>
+
+#include <asm/thread_info.h>
 
 #ifdef CONFIG_SMP
 # define INIT_PUSHABLE_TASKS(tsk)					\
@@ -157,6 +160,23 @@ extern struct task_group root_task_group;
 # define INIT_VTIME(tsk)
 #endif
 
+#ifdef CONFIG_FIVE
+# define INIT_TASK_INTEGRITY(integrity) {				\
+	.user_value = INTEGRITY_NONE,					\
+	.value = INTEGRITY_NONE,					\
+	.usage_count = ATOMIC_INIT(1),					\
+	.value_lock = __SPIN_LOCK_UNLOCKED(integrity.value_lock),	\
+	.list_lock = __SPIN_LOCK_UNLOCKED(integrity.list_lock),		\
+	.events = { .list = LIST_HEAD_INIT(integrity.events.list),},	\
+}
+
+# define INIT_INTEGRITY(tsk)						\
+	.integrity = &init_integrity,
+#else
+# define INIT_INTEGRITY(tsk)
+# define INIT_TASK_INTEGRITY(integrity)
+#endif
+
 #define INIT_TASK_COMM "swapper"
 
 #ifdef CONFIG_RT_MUTEXES
@@ -183,14 +203,21 @@ extern struct task_group root_task_group;
 # define INIT_KASAN(tsk)
 #endif
 
+#ifdef CONFIG_THREAD_INFO_IN_TASK
+# define INIT_TASK_TI(tsk) .thread_info = INIT_THREAD_INFO(tsk),
+#else
+# define INIT_TASK_TI(tsk)
+#endif
+
 /*
  *  INIT_TASK is used to set up the first task table, touch at
  * your own risk!. Base=0, limit=0x1fffff (=2MB)
  */
 #define INIT_TASK(tsk)	\
 {									\
+	INIT_TASK_TI(tsk)						\
 	.state		= 0,						\
-	.stack		= &init_thread_info,				\
+	.stack		= init_stack,					\
 	.usage		= ATOMIC_INIT(2),				\
 	.flags		= PF_KTHREAD,					\
 	.prio		= MAX_PRIO-20,					\
@@ -260,6 +287,7 @@ extern struct task_group root_task_group;
 	INIT_VTIME(tsk)							\
 	INIT_NUMA_BALANCING(tsk)					\
 	INIT_KASAN(tsk)							\
+	INIT_INTEGRITY(tsk)						\
 }
 
 

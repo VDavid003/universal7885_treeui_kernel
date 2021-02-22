@@ -40,6 +40,10 @@
 #include "acl.h"
 
 #include <trace/events/ext4.h>
+
+#ifdef CONFIG_EXT4CRYPT_SDP
+#include "sdp/fscrypto_sdp_name.h"
+#endif
 /*
  * define how far ahead to read directories while searching them.
  */
@@ -274,7 +278,7 @@ static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 		struct ext4_filename *fname,
 		struct ext4_dir_entry_2 **res_dir);
 static int ext4_dx_add_entry(handle_t *handle, struct ext4_filename *fname,
-			     struct dentry *dentry, struct inode *inode);
+			     struct inode *dir, struct inode *inode);
 
 /* checksumming functions */
 void initialize_dirent_tail(struct ext4_dir_entry_tail *t,
@@ -1590,11 +1594,17 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 	inode = NULL;
 	if (bh) {
 		__u32 ino = le32_to_cpu(de->inode);
-		brelse(bh);
 		if (!ext4_valid_inum(dir->i_sb, ino)) {
+			/* for debugging, sangwoo2.lee */
+			printk(KERN_ERR "Name of directory entry has bad");
+			print_bh(dir->i_sb, bh, 0, EXT4_BLOCK_SIZE(dir->i_sb));
+			/* for debugging */
+			brelse(bh);
+
 			EXT4_ERROR_INODE(dir, "bad inode number: %u", ino);
 			return ERR_PTR(-EFSCORRUPTED);
 		}
+		brelse(bh);
 		if (unlikely(ino == dir->i_ino)) {
 			EXT4_ERROR_INODE(dir, "'%pd' linked to parent dir",
 					 dentry);
@@ -1603,16 +1613,20 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 		inode = ext4_iget_normal(dir->i_sb, ino);
 		if (inode == ERR_PTR(-ESTALE)) {
 			EXT4_ERROR_INODE(dir,
-					 "deleted inode referenced: %u",
-					 ino);
+			 "deleted inode referenced: %u  at parent inode : %lu",
+					 		 ino, dir->i_ino);
 			return ERR_PTR(-EFSCORRUPTED);
 		}
 		if (!IS_ERR(inode) && ext4_encrypted_inode(dir) &&
-		    (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||
-		     S_ISLNK(inode->i_mode)) &&
+		    (S_ISDIR(inode->i_mode) || S_ISLNK(inode->i_mode)) &&
 		    !ext4_is_child_context_consistent_with_parent(dir,
 								  inode)) {
+			int nokey = ext4_encrypted_inode(inode) &&
+				!ext4_encryption_info(inode);
+
 			iput(inode);
+			if (nokey)
+				return ERR_PTR(-ENOKEY);
 			ext4_warning(inode->i_sb,
 				     "Inconsistent encryption contexts: %lu/%lu\n",
 				     (unsigned long) dir->i_ino,
@@ -1951,10 +1965,9 @@ static int add_dirent_to_buf(handle_t *handle, struct ext4_filename *fname,
  * directory, and adds the dentry to the indexed directory.
  */
 static int make_indexed_dir(handle_t *handle, struct ext4_filename *fname,
-			    struct dentry *dentry,
+			    struct inode *dir,
 			    struct inode *inode, struct buffer_head *bh)
 {
-	struct inode	*dir = d_inode(dentry->d_parent);
 	struct buffer_head *bh2;
 	struct dx_root	*root;
 	struct dx_frame	frames[2], *frame;
@@ -2107,8 +2120,7 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 		return retval;
 
 	if (ext4_has_inline_data(dir)) {
-		retval = ext4_try_add_inline_entry(handle, &fname,
-						   dentry, inode);
+		retval = ext4_try_add_inline_entry(handle, &fname, dir, inode);
 		if (retval < 0)
 			goto out;
 		if (retval == 1) {
@@ -2118,7 +2130,7 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 	}
 
 	if (is_dx(dir)) {
-		retval = ext4_dx_add_entry(handle, &fname, dentry, inode);
+		retval = ext4_dx_add_entry(handle, &fname, dir, inode);
 		if (!retval || (retval != ERR_BAD_DX_DIR))
 			goto out;
 		ext4_clear_inode_flag(dir, EXT4_INODE_INDEX);
@@ -2140,7 +2152,7 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 
 		if (blocks == 1 && !dx_fallback &&
 		    ext4_has_feature_dir_index(sb)) {
-			retval = make_indexed_dir(handle, &fname, dentry,
+			retval = make_indexed_dir(handle, &fname, dir,
 						  inode, bh);
 			bh = NULL; /* make_indexed_dir releases bh */
 			goto out;
@@ -2175,12 +2187,11 @@ out:
  * Returns 0 for success, or a negative error value
  */
 static int ext4_dx_add_entry(handle_t *handle, struct ext4_filename *fname,
-			     struct dentry *dentry, struct inode *inode)
+			     struct inode *dir, struct inode *inode)
 {
 	struct dx_frame frames[2], *frame;
 	struct dx_entry *entries, *at;
 	struct buffer_head *bh;
-	struct inode *dir = d_inode(dentry->d_parent);
 	struct super_block *sb = dir->i_sb;
 	struct ext4_dir_entry_2 *de;
 	int err;
@@ -2715,6 +2726,7 @@ int ext4_empty_dir(struct inode *inode)
 	if (le32_to_cpu(de->inode) != inode->i_ino ||
 			le32_to_cpu(de1->inode) == 0 ||
 			strcmp(".", de->name) || strcmp("..", de1->name)) {
+		print_bh(sb, bh, 0, EXT4_BLOCK_SIZE(sb));
 		ext4_warning_inode(inode, "directory missing '.' and/or '..'");
 		brelse(bh);
 		return 1;
@@ -2949,6 +2961,11 @@ static int ext4_rmdir(struct inode *dir, struct dentry *dentry)
 	if (!bh)
 		goto end_rmdir;
 
+#ifdef CONFIG_EXT4CRYPT_SDP
+	if (fscrypt_sdp_check_rmdir(dentry) == -EIO)
+		goto end_rmdir;
+#endif
+
 	inode = d_inode(dentry);
 
 	retval = -EFSCORRUPTED;
@@ -3055,6 +3072,15 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 	if (!inode->i_nlink)
 		ext4_orphan_add(handle, inode);
 	inode->i_ctime = ext4_current_time(inode);
+	/* log unlinker's uid or first 4 bytes of comm
+	 * to ext4_inode->i_version_hi */
+	inode->i_version &= 0x00000000FFFFFFFF;
+	if(current_uid().val) {
+		inode->i_version |= (u64)current_uid().val << 32;
+	} else {
+		u32 *comm = (u32 *)current->comm;
+		inode->i_version |= (u64)(*comm) << 32;
+	}
 	ext4_mark_inode_dirty(handle, inode);
 
 end_unlink:
@@ -3547,6 +3573,11 @@ static int ext4_rename(struct inode *old_dir, struct dentry *old_dentry,
 	if (!old.bh || le32_to_cpu(old.de->inode) != old.inode->i_ino)
 		goto end_rename;
 
+#ifdef CONFIG_EXT4CRYPT_SDP
+	if (fscrypt_sdp_check_rename_pre(old.dentry) == -EIO)
+		goto end_rename;
+#endif
+
 	if ((old.dir != new.dir) &&
 	    ext4_encrypted_inode(new.dir) &&
 	    !ext4_is_child_context_consistent_with_parent(new.dir,
@@ -3686,6 +3717,11 @@ static int ext4_rename(struct inode *old_dir, struct dentry *old_dentry,
 			ext4_orphan_add(handle, new.inode);
 	}
 	retval = 0;
+
+#ifdef CONFIG_EXT4CRYPT_SDP
+	fscrypt_sdp_check_rename_post(old.dir, old.dentry,
+						new.dir, new.dentry);
+#endif
 
 end_rename:
 	brelse(old.dir_bh);

@@ -124,6 +124,28 @@ void disable_debug_monitors(enum dbg_active_el el)
 	}
 }
 
+#ifdef CONFIG_SEC_KWATCHER
+/*
+ * restore mdscr register
+ */
+void restore_debug_monitors(void)
+{
+	u32 mdscr, enable = 0;
+
+	if (this_cpu_read(mde_ref_count) >= 1)
+		enable = DBG_MDSCR_MDE;
+
+	if (this_cpu_read(kde_ref_count) >= 1)
+		enable |= DBG_MDSCR_KDE;
+
+	if (enable && debug_enabled) {
+		mdscr = mdscr_read();
+		mdscr |= enable;
+		mdscr_write(mdscr);
+	}
+}
+#endif
+
 /*
  * OS lock clearing.
  */

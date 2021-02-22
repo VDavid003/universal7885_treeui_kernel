@@ -1,6 +1,10 @@
 #ifndef _SCSI_DISK_H
 #define _SCSI_DISK_H
 
+#if defined(CONFIG_UFS_SRPMB)
+#include "scsi_srpmb.h"
+#endif
+
 /*
  * More than enough for everybody ;)  The huge number of majors
  * is a leftover from 16bit dev_t days, we don't really need that
@@ -94,6 +98,17 @@ struct scsi_disk {
 	unsigned	lbpvpd : 1;
 	unsigned	ws10 : 1;
 	unsigned	ws16 : 1;
+#if defined(CONFIG_UFS_SRPMB)
+	struct rpmb_irq_ctx *rpmb_ctx;
+#endif
+#ifdef CONFIG_USB_STORAGE_DETECT
+	wait_queue_head_t	delay_wait;
+	struct completion	scanning_done;
+	struct task_struct	*th;
+	int		thread_remove;
+	int		async_end;
+	int		prv_media_present;
+#endif
 };
 #define to_scsi_disk(obj) container_of(obj,struct scsi_disk,dev)
 

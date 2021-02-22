@@ -30,7 +30,12 @@
 
 #define get_ds()	(KERNEL_DS)
 #define get_fs()	(current_thread_info()->addr_limit)
-#define set_fs(x)	(current_thread_info()->addr_limit = (x))
+static inline void set_fs(mm_segment_t fs)
+{
+	current_thread_info()->addr_limit = fs;
+	/* On user-mode return, check fs is correct */
+	set_thread_flag(TIF_FSCHECK);
+}
 
 #define segment_eq(a, b)	((a).seg == (b).seg)
 
@@ -726,7 +731,7 @@ __copy_from_user_overflow(int size, unsigned long count)
 
 #endif
 
-static inline unsigned long __must_check
+static __always_inline unsigned long __must_check
 copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 	int sz = __compiletime_object_size(to);
@@ -751,9 +756,10 @@ copy_from_user(void *to, const void __user *from, unsigned long n)
 	 * case, and do only runtime checking for non-constant sizes.
 	 */
 
-	if (likely(sz < 0 || sz >= n))
+	if (likely(sz < 0 || sz >= n)) {
+		check_object_size(to, n, false);
 		n = _copy_from_user(to, from, n);
-	else if(__builtin_constant_p(n))
+	} else if (__builtin_constant_p(n))
 		copy_from_user_overflow();
 	else
 		__copy_from_user_overflow(sz, n);
@@ -761,7 +767,7 @@ copy_from_user(void *to, const void __user *from, unsigned long n)
 	return n;
 }
 
-static inline unsigned long __must_check
+static __always_inline unsigned long __must_check
 copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 	int sz = __compiletime_object_size(from);
@@ -769,9 +775,10 @@ copy_to_user(void __user *to, const void *from, unsigned long n)
 	might_fault();
 
 	/* See the comment in copy_from_user() above. */
-	if (likely(sz < 0 || sz >= n))
+	if (likely(sz < 0 || sz >= n)) {
+		check_object_size(from, n, true);
 		n = _copy_to_user(to, from, n);
-	else if(__builtin_constant_p(n))
+	} else if (__builtin_constant_p(n))
 		copy_to_user_overflow();
 	else
 		__copy_to_user_overflow(sz, n);
@@ -781,6 +788,31 @@ copy_to_user(void __user *to, const void *from, unsigned long n)
 
 #undef __copy_from_user_overflow
 #undef __copy_to_user_overflow
+
+/*
+ * The "unsafe" user accesses aren't really "unsafe", but the naming
+ * is a big fat warning: you have to not only do the access_ok()
+ * checking before using them, but you have to surround them with the
+ * user_access_begin/end() pair.
+ */
+#define user_access_begin()	__uaccess_begin()
+#define user_access_end()	__uaccess_end()
+
+#define unsafe_put_user(x, ptr, err_label)					\
+do {										\
+	int __pu_err;								\
+	__put_user_size((x), (ptr), sizeof(*(ptr)), __pu_err, -EFAULT);		\
+	if (unlikely(__pu_err)) goto err_label;					\
+} while (0)
+
+#define unsafe_get_user(x, ptr, err_label)					\
+do {										\
+	int __gu_err;								\
+	unsigned long __gu_val;							\
+	__get_user_size(__gu_val, (ptr), sizeof(*(ptr)), __gu_err, -EFAULT);	\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;				\
+	if (unlikely(__gu_err)) goto err_label;					\
+} while (0)
 
 #endif /* _ASM_X86_UACCESS_H */
 

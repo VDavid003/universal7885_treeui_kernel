@@ -18,6 +18,8 @@
 #include <linux/platform_device.h>
 #include <linux/usb/phy.h>
 #include <linux/slab.h>
+#include <linux/phy/phy.h>
+#include <linux/usb/phy.h>
 #include <linux/usb/xhci_pdriver.h>
 #include <linux/acpi.h>
 
@@ -59,7 +61,16 @@ static int xhci_plat_setup(struct usb_hcd *hcd)
 			return ret;
 	}
 
-	return xhci_gen_setup(hcd, xhci_plat_quirks);
+	ret = xhci_gen_setup(hcd, xhci_plat_quirks);
+
+	/*
+	 * DWC3 WORKAROUND: xhci reset clears PHY CR port settings,
+	 * so USB3.0 PHY should be tuned again.
+	 */
+	if (hcd->phy)
+		phy_tune(hcd->phy, OTG_STATE_A_HOST);
+
+	return ret;
 }
 
 static int xhci_plat_start(struct usb_hcd *hcd)
@@ -75,6 +86,7 @@ static int xhci_plat_start(struct usb_hcd *hcd)
 
 static int xhci_plat_probe(struct platform_device *pdev)
 {
+	struct device		*parent = pdev->dev.parent;
 	struct device_node	*node = pdev->dev.of_node;
 	struct usb_xhci_pdata	*pdata = dev_get_platdata(&pdev->dev);
 	const struct hc_driver	*driver;
@@ -123,6 +135,16 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
 
+	/* Get USB3.0 PHY to tune the PHY */
+	if (parent) {
+		hcd->phy = devm_phy_get(parent, "usb3-phy");
+		if (IS_ERR_OR_NULL(hcd->phy)) {
+			hcd->phy = NULL;
+			dev_err(&pdev->dev,
+				"%s: failed to get phy\n", __func__);
+		}
+	}
+
 	/*
 	 * Not all platforms have a clk so it is not an error if the
 	 * clock does not exists.
@@ -161,6 +183,9 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	if ((node && of_property_read_bool(node, "usb3-lpm-capable")) ||
 			(pdata && pdata->usb3_lpm_capable))
 		xhci->quirks |= XHCI_LPM_SUPPORT;
+#ifdef CONFIG_USB_HOST_L1_SUPPORT
+	xhci->quirks |= XHCI_LPM_L1_SUPPORT;
+#endif
 
 	hcd->usb_phy = devm_usb_get_phy_by_phandle(&pdev->dev, "usb-phy", 0);
 	if (IS_ERR(hcd->usb_phy)) {
@@ -209,14 +234,36 @@ put_hcd:
 
 static int xhci_plat_remove(struct platform_device *dev)
 {
+	struct device	*parent = dev->dev.parent;
 	struct usb_hcd	*hcd = platform_get_drvdata(dev);
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	struct clk *clk = xhci->clk;
 
-	xhci->xhc_state |= XHCI_STATE_REMOVING;
+#if defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
+	pr_info("%s \n", __func__);
+	/* In order to prevent kernel panic */
+	if(!pm_runtime_suspended(&xhci->shared_hcd->self.root_hub->dev)) {
+		pr_info("%s, shared_hcd pm_runtime_forbid\n", __func__);
+		pm_runtime_forbid(&xhci->shared_hcd->self.root_hub->dev);
+	}
+	if(!pm_runtime_suspended(&xhci->main_hcd->self.root_hub->dev)) {
+		pr_info("%s, main_hcd pm_runtime_forbid\n", __func__);
+		pm_runtime_forbid(&xhci->main_hcd->self.root_hub->dev);
+	}
 
+	xhci->xhc_state |= XHCI_STATE_REMOVING;
+#endif
 	usb_remove_hcd(xhci->shared_hcd);
 	usb_phy_shutdown(hcd->usb_phy);
+
+	/*
+	 * In usb_remove_hcd, phy_exit is called if phy is not NULL.
+	 * However, in the case that PHY was turn on or off as runtime PM,
+	 * PHY sould not exit at this time. So, to prevent the PHY exit,
+	 * PHY pointer have to be NULL.
+	 */
+	if (parent && hcd->phy)
+		hcd->phy = NULL;
 
 	usb_remove_hcd(hcd);
 	usb_put_hcd(xhci->shared_hcd);

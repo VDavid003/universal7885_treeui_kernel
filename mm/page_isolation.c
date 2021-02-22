@@ -268,6 +268,12 @@ int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
 	spin_lock_irqsave(&zone->lock, flags);
 	ret = __test_page_isolated_in_pageblock(start_pfn, end_pfn,
 						skip_hwpoisoned_pages);
+
+	if (pfn < end_pfn) {
+		pr_info("%s: page of pfn %lu is not isolated\n", __func__, pfn);
+		dump_page(pfn_to_page(pfn), "isolation failure");
+	}
+
 	spin_unlock_irqrestore(&zone->lock, flags);
 	return ret ? 0 : -EBUSY;
 }

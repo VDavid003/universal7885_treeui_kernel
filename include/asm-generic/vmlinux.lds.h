@@ -249,6 +249,52 @@
 	*(.data..init_task)
 
 /*
+ * Allow architectures to handle ro_after_init data on their
+ * own by defining an empty RO_AFTER_INIT_DATA.
+ */
+#ifndef RO_AFTER_INIT_DATA
+#define RO_AFTER_INIT_DATA *(.data..ro_after_init)
+#endif
+
+#define PG_IDMAP							\
+	. = ALIGN(PAGE_SIZE);						\
+		idmap_pg_dir = .;					\
+	. += IDMAP_DIR_SIZE;
+
+#define PG_SWAP								\
+	. = ALIGN(PAGE_SIZE);						\
+		swapper_pg_dir = .;					\
+	. += SWAPPER_DIR_SIZE;
+
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+#define PG_RESERVED							\
+	. = ALIGN(PAGE_SIZE);						\
+	reserved_ttbr0 = .;						\
+	. += RESERVED_TTBR0_SIZE;
+#else
+#define PG_RESERVED
+#endif
+
+#ifdef CONFIG_UNMAP_KERNEL_AT_EL0
+#define PG_TRAMP							\
+	. = ALIGN(PAGE_SIZE);						\
+	tramp_pg_dir = .;						\
+	. += PAGE_SIZE;
+#else
+#define PG_TRAMP
+#endif
+
+#ifdef CONFIG_UH_RKP
+#define RKP_RO_PGT							\
+	PG_IDMAP							\
+	PG_SWAP								\
+	PG_RESERVED							\
+	PG_TRAMP
+#else
+#define RKP_RO_PGT
+#endif
+
+/*
  * Read only Data
  */
 #define RO_DATA_SECTION(align)						\
@@ -266,6 +312,26 @@
 									\
 	.rodata1          : AT(ADDR(.rodata1) - LOAD_OFFSET) {		\
 		*(.rodata1)						\
+		RO_AFTER_INIT_DATA	/* Read only after init */	\
+	}								\
+	. = ALIGN(4096);						\
+	.rkp_bss          : AT(ADDR(.rkp_bss) - LOAD_OFFSET) {		\
+		VMLINUX_SYMBOL(__start_rkp_bss) = .;			\
+		*(.rkp_bss.page_aligned)				\
+		*(.rkp_bss)						\
+		VMLINUX_SYMBOL(__stop_rkp_bss) = .;			\
+	} = 0								\
+									\
+	.rkp_ro          : AT(ADDR(.rkp_ro) - LOAD_OFFSET) {		\
+		VMLINUX_SYMBOL(__start_rkp_ro) = .;			\
+		*(.rkp_ro)						\
+		VMLINUX_SYMBOL(__stop_rkp_ro) = .;			\
+		VMLINUX_SYMBOL(__start_kdp_ro) = .;			\
+		*(.kdp_ro)						\
+		VMLINUX_SYMBOL(__stop_kdp_ro) = .;			\
+		VMLINUX_SYMBOL(__start_rkp_ro_pgt) = .;			\
+		RKP_RO_PGT						\
+		VMLINUX_SYMBOL(__stop_rkp_ro_pgt) = .;			\
 	}								\
 									\
 	BUG_TABLE							\
@@ -456,15 +522,17 @@
 		*(.entry.text)						\
 		VMLINUX_SYMBOL(__entry_text_end) = .;
 
-#ifdef CONFIG_FUNCTION_GRAPH_TRACER
 #define IRQENTRY_TEXT							\
 		ALIGN_FUNCTION();					\
 		VMLINUX_SYMBOL(__irqentry_text_start) = .;		\
 		*(.irqentry.text)					\
 		VMLINUX_SYMBOL(__irqentry_text_end) = .;
-#else
-#define IRQENTRY_TEXT
-#endif
+
+#define SOFTIRQENTRY_TEXT						\
+		ALIGN_FUNCTION();					\
+		VMLINUX_SYMBOL(__softirqentry_text_start) = .;		\
+		*(.softirqentry.text)					\
+		VMLINUX_SYMBOL(__softirqentry_text_end) = .;
 
 /* Section used for early init (in .S files) */
 #define HEAD_TEXT  *(.head.text)

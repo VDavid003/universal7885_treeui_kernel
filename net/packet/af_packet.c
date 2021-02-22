@@ -1658,6 +1658,10 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 	}
 
 	mutex_lock(&fanout_mutex);
+	
+	err = -EINVAL;
+	if (!po->running)
+		goto out;
 
 	err = -EALREADY;
 	if (po->fanout)
@@ -1672,6 +1676,8 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 		atomic_long_set(&rollover->num, 0);
 		atomic_long_set(&rollover->num_huge, 0);
 		atomic_long_set(&rollover->num_failed, 0);
+		po->rollover = rollover;
+
 	}
 
 	match = NULL;

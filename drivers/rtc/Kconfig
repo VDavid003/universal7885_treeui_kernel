@@ -1196,6 +1196,49 @@ config RTC_DRV_S3C
 	  This driver can also be build as a module. If so, the module
 	  will be called rtc-s3c.
 
+config RTC_DRV_SEC
+	tristate "Samsung PMIC series RTC"
+	depends on MFD_SEC_CORE
+	help
+	  If you say yes here you will get support for the
+	  RTC of Samsung PMIC series.
+	  This driver can also be built as a module. If so, the module
+	  will be called rtc-sec.
+
+config RTC_ALARM_BOOT
+	bool "Android alarm boot function"
+	default n
+	help
+	  This is for alarm booting function. This feature is only used in
+	  Chinese models.
+
+config RTC_DRV_S2MPS17
+	tristate "Samsung PMIC series RTC"
+	depends on MFD_S2MPS17
+	help
+	  If you say yes here you will get support for the
+	  RTC of Samsung PMIC series.
+	  This driver can also be built as a module. If so, the module
+	  will be called rtc-s2mps17.
+
+config RTC_DRV_S2MPU07
+	tristate "Samsung PMIC series RTC"
+	depends on MFD_S2MPU07
+	help
+	  If you say yes here you will get support for the
+	  RTC of Samsung PMIC series.
+	  This driver can also be built as a module. If so, the module
+	  will be called rtc-s2mpu07.
+
+config RTC_DRV_S2MPU08
+	tristate "Samsung PMIC S2MPU08 series RTC"
+	depends on MFD_S2MPU08
+	help
+	  If you say yes here you will get support for the
+	  RTC of Samsung PMIC series.
+	  This driver can also be built as a module. If so, the module
+	  will be called rtc-s2mpu08.
+
 config RTC_DRV_EP93XX
 	tristate "Cirrus Logic EP93XX"
 	depends on ARCH_EP93XX
@@ -1627,5 +1670,13 @@ config RTC_DRV_HID_SENSOR_TIME
 	  If this driver is compiled as a module, it will be named
 	  rtc-hid-sensor-time.
 
+config RTC_DRV_GOLDFISH
+	tristate "Goldfish Real Time Clock"
+	depends on MIPS && (GOLDFISH || COMPILE_TEST)
+	help
+	  Say yes to enable RTC driver for the Goldfish based virtual platform.
+
+	  Goldfish is a code name for the virtual platform developed by Google
+	  for Android emulation.
 
 endif # RTC_CLASS

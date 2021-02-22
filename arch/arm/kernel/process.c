@@ -80,6 +80,7 @@ void arch_cpu_idle_prepare(void)
 
 void arch_cpu_idle_enter(void)
 {
+	idle_notifier_call_chain(IDLE_START);
 	ledtrig_cpu(CPU_LED_IDLE_START);
 #ifdef CONFIG_PL310_ERRATA_769419
 	wmb();
@@ -89,6 +90,7 @@ void arch_cpu_idle_enter(void)
 void arch_cpu_idle_exit(void)
 {
 	ledtrig_cpu(CPU_LED_IDLE_END);
+	idle_notifier_call_chain(IDLE_END);
 }
 
 void __show_regs(struct pt_regs *regs)
@@ -193,9 +195,9 @@ EXPORT_SYMBOL_GPL(thread_notify_head);
 /*
  * Free current thread data structures etc..
  */
-void exit_thread(void)
+void exit_thread(struct task_struct *tsk)
 {
-	thread_notify(THREAD_NOTIFY_EXIT, current_thread_info());
+	thread_notify(THREAD_NOTIFY_EXIT, task_thread_info(tsk));
 }
 
 void flush_thread(void)

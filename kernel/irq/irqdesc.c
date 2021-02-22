@@ -15,6 +15,10 @@
 #include <linux/radix-tree.h>
 #include <linux/bitmap.h>
 #include <linux/irqdomain.h>
+#include <linux/exynos-ss.h>
+#ifdef CONFIG_SEC_DUMP_SUMMARY
+#include <linux/sec_debug.h>
+#endif
 
 #include "internals.h"
 
@@ -23,11 +27,18 @@
  */
 static struct lock_class_key irq_desc_lock_class;
 
+#ifdef CONFIG_SCHED_HMP
+extern struct cpumask hmp_slow_cpu_mask;
+#endif
 #if defined(CONFIG_SMP)
 static void __init init_irq_default_affinity(void)
 {
 	alloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
+#ifdef CONFIG_SCHED_HMP
+	cpumask_copy(irq_default_affinity, &hmp_slow_cpu_mask);
+#else
 	cpumask_setall(irq_default_affinity);
+#endif
 }
 #else
 static void __init init_irq_default_affinity(void)
@@ -347,6 +358,16 @@ int generic_handle_irq(unsigned int irq)
 
 	if (!desc)
 		return -EINVAL;
+
+#ifdef CONFIG_SEC_DUMP_SUMMARY
+		if (desc->action)
+			sec_debug_irq_sched_log(irq, (void *)desc->action->handler,
+				irqs_disabled());
+		else
+			sec_debug_irq_sched_log(irq, (void *)desc->handle_irq,
+				irqs_disabled());
+#endif
+
 	generic_handle_irq_desc(desc);
 	return 0;
 }
@@ -366,9 +387,11 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 			bool lookup, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
+	unsigned long long start_time;
 	unsigned int irq = hwirq;
 	int ret = 0;
 
+	exynos_ss_irq_exit_var(start_time);
 	irq_enter();
 
 #ifdef CONFIG_IRQ_DOMAIN
@@ -388,6 +411,7 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	}
 
 	irq_exit();
+	exynos_ss_irq_exit(irq, start_time);
 	set_irq_regs(old_regs);
 	return ret;
 }

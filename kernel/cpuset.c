@@ -99,6 +99,7 @@ struct cpuset {
 
 	/* user-configured CPUs and Memory Nodes allow to tasks */
 	cpumask_var_t cpus_allowed;
+	cpumask_var_t cpus_requested;
 	nodemask_t mems_allowed;
 
 	/* effective CPUs and Memory Nodes allow to tasks */
@@ -171,6 +172,8 @@ typedef enum {
 	CS_SCHED_LOAD_BALANCE,
 	CS_SPREAD_PAGE,
 	CS_SPREAD_SLAB,
+	CS_SELECTIVE_BOOST,
+	CS_PRIO_PINNING,
 } cpuset_flagbits_t;
 
 /* convenient tests for these bits */
@@ -218,6 +221,16 @@ static struct cpuset top_cpuset = {
 	.flags = ((1 << CS_ONLINE) | (1 << CS_CPU_EXCLUSIVE) |
 		  (1 << CS_MEM_EXCLUSIVE)),
 };
+
+static inline int is_selective_boost_enabled(const struct cpuset *cs)
+{
+	return test_bit(CS_SELECTIVE_BOOST, &cs->flags);
+}
+
+static inline int is_prio_pinning_enabled(const struct cpuset *cs)
+{
+	return test_bit(CS_PRIO_PINNING, &cs->flags);
+}
 
 /**
  * cpuset_for_each_child - traverse online children of a cpuset
@@ -322,6 +335,34 @@ static struct file_system_type cpuset_fs_type = {
 	.mount = cpuset_mount,
 };
 
+int cpuset_task_is_boosted(struct task_struct *p)
+{
+	struct cpuset *cpuset_for_task;
+	int ret = 0;
+
+	rcu_read_lock();
+	cpuset_for_task = task_cs(p);
+	ret = is_selective_boost_enabled(cpuset_for_task);
+	rcu_read_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(cpuset_task_is_boosted);
+
+int cpuset_task_is_pinned(struct task_struct *p)
+{
+	struct cpuset *cpuset_for_task;
+	int ret = 0;
+
+	rcu_read_lock();
+	cpuset_for_task = task_cs(p);
+	ret = is_prio_pinning_enabled(cpuset_for_task);
+	rcu_read_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(cpuset_task_is_pinned);
+
 /*
  * Return in pmask the portion of a cpusets's cpus_allowed that
  * are online.  If none are online, walk up the cpuset hierarchy
@@ -398,7 +439,7 @@ static void cpuset_update_task_spread_flag(struct cpuset *cs,
 
 static int is_cpuset_subset(const struct cpuset *p, const struct cpuset *q)
 {
-	return	cpumask_subset(p->cpus_allowed, q->cpus_allowed) &&
+	return	cpumask_subset(p->cpus_requested, q->cpus_requested) &&
 		nodes_subset(p->mems_allowed, q->mems_allowed) &&
 		is_cpu_exclusive(p) <= is_cpu_exclusive(q) &&
 		is_mem_exclusive(p) <= is_mem_exclusive(q);
@@ -498,7 +539,7 @@ static int validate_change(struct cpuset *cur, struct cpuset *trial)
 	cpuset_for_each_child(c, css, par) {
 		if ((is_cpu_exclusive(trial) || is_cpu_exclusive(c)) &&
 		    c != cur &&
-		    cpumask_intersects(trial->cpus_allowed, c->cpus_allowed))
+		    cpumask_intersects(trial->cpus_requested, c->cpus_requested))
 			goto out;
 		if ((is_mem_exclusive(trial) || is_mem_exclusive(c)) &&
 		    c != cur &&
@@ -957,17 +998,18 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 	if (!*buf) {
 		cpumask_clear(trialcs->cpus_allowed);
 	} else {
-		retval = cpulist_parse(buf, trialcs->cpus_allowed);
+		retval = cpulist_parse(buf, trialcs->cpus_requested);
 		if (retval < 0)
 			return retval;
 
-		if (!cpumask_subset(trialcs->cpus_allowed,
-				    top_cpuset.cpus_allowed))
+		if (!cpumask_subset(trialcs->cpus_requested, cpu_present_mask))
 			return -EINVAL;
+
+		cpumask_and(trialcs->cpus_allowed, trialcs->cpus_requested, cpu_active_mask);
 	}
 
 	/* Nothing to do if the cpus didn't change */
-	if (cpumask_equal(cs->cpus_allowed, trialcs->cpus_allowed))
+	if (cpumask_equal(cs->cpus_requested, trialcs->cpus_requested))
 		return 0;
 
 	retval = validate_change(cs, trialcs);
@@ -976,6 +1018,7 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 
 	spin_lock_irq(&callback_lock);
 	cpumask_copy(cs->cpus_allowed, trialcs->cpus_allowed);
+	cpumask_copy(cs->cpus_requested, trialcs->cpus_requested);
 	spin_unlock_irq(&callback_lock);
 
 	/* use trialcs->cpus_allowed as a temp variable */
@@ -1502,6 +1545,28 @@ out_unlock:
 	return ret;
 }
 
+static int cpuset_allow_attach(struct cgroup_taskset *tset)
+{
+	const struct cred *cred = current_cred(), *tcred;
+	struct task_struct *task;
+	struct cgroup_subsys_state *css;
+	struct cpuset *cs;
+
+	cgroup_taskset_first(tset, &css);
+	cs = css_cs(css);
+
+	cgroup_taskset_for_each(task, css, tset) {
+		tcred = __task_cred(task);
+
+		if ((current != task) && !capable(CAP_SYS_ADMIN) &&
+		    !uid_eq(cred->euid, tcred->uid) &&
+		    !uid_eq(cred->euid, tcred->suid))
+			return -EACCES;
+	}
+
+	return 0;
+}
+
 static void cpuset_cancel_attach(struct cgroup_taskset *tset)
 {
 	struct cgroup_subsys_state *css;
@@ -1609,6 +1674,8 @@ typedef enum {
 	FILE_MEMORY_PRESSURE,
 	FILE_SPREAD_PAGE,
 	FILE_SPREAD_SLAB,
+	FILE_SELECTIVE_BOOST,
+	FILE_PRIO_PINNING,
 } cpuset_filetype_t;
 
 static int cpuset_write_u64(struct cgroup_subsys_state *css, struct cftype *cft,
@@ -1648,6 +1715,12 @@ static int cpuset_write_u64(struct cgroup_subsys_state *css, struct cftype *cft,
 		break;
 	case FILE_SPREAD_SLAB:
 		retval = update_flag(CS_SPREAD_SLAB, cs, val);
+		break;
+	case FILE_SELECTIVE_BOOST:
+		retval = update_flag(CS_SELECTIVE_BOOST, cs, val);
+		break;
+	case FILE_PRIO_PINNING:
+		retval = update_flag(CS_PRIO_PINNING, cs, val);
 		break;
 	default:
 		retval = -EINVAL;
@@ -1766,7 +1839,7 @@ static int cpuset_common_seq_show(struct seq_file *sf, void *v)
 
 	switch (type) {
 	case FILE_CPULIST:
-		seq_printf(sf, "%*pbl\n", cpumask_pr_args(cs->cpus_allowed));
+		seq_printf(sf, "%*pbl\n", cpumask_pr_args(cs->cpus_requested));
 		break;
 	case FILE_MEMLIST:
 		seq_printf(sf, "%*pbl\n", nodemask_pr_args(&cs->mems_allowed));
@@ -1808,6 +1881,10 @@ static u64 cpuset_read_u64(struct cgroup_subsys_state *css, struct cftype *cft)
 		return is_spread_page(cs);
 	case FILE_SPREAD_SLAB:
 		return is_spread_slab(cs);
+	case FILE_SELECTIVE_BOOST:
+		return is_selective_boost_enabled(cs);
+	case FILE_PRIO_PINNING:
+		return is_prio_pinning_enabled(cs);
 	default:
 		BUG();
 	}
@@ -1935,6 +2012,20 @@ static struct cftype files[] = {
 		.private = FILE_MEMORY_PRESSURE_ENABLED,
 	},
 
+	{
+		.name = "selective_boost",
+		.read_u64 = cpuset_read_u64,
+		.write_u64 = cpuset_write_u64,
+		.private = FILE_SELECTIVE_BOOST,
+	},
+
+	{
+		.name = "prio_pinning",
+		.read_u64 = cpuset_read_u64,
+		.write_u64 = cpuset_write_u64,
+		.private = FILE_PRIO_PINNING,
+	},
+
 	{ }	/* terminate */
 };
 
@@ -1956,11 +2047,14 @@ cpuset_css_alloc(struct cgroup_subsys_state *parent_css)
 		return ERR_PTR(-ENOMEM);
 	if (!alloc_cpumask_var(&cs->cpus_allowed, GFP_KERNEL))
 		goto free_cs;
+	if (!alloc_cpumask_var(&cs->cpus_requested, GFP_KERNEL))
+		goto free_allowed;
 	if (!alloc_cpumask_var(&cs->effective_cpus, GFP_KERNEL))
-		goto free_cpus;
+		goto free_requested;
 
 	set_bit(CS_SCHED_LOAD_BALANCE, &cs->flags);
 	cpumask_clear(cs->cpus_allowed);
+	cpumask_clear(cs->cpus_requested);
 	nodes_clear(cs->mems_allowed);
 	cpumask_clear(cs->effective_cpus);
 	nodes_clear(cs->effective_mems);
@@ -1969,7 +2063,9 @@ cpuset_css_alloc(struct cgroup_subsys_state *parent_css)
 
 	return &cs->css;
 
-free_cpus:
+free_requested:
+	free_cpumask_var(cs->cpus_requested);
+free_allowed:
 	free_cpumask_var(cs->cpus_allowed);
 free_cs:
 	kfree(cs);
@@ -2032,6 +2128,7 @@ static int cpuset_css_online(struct cgroup_subsys_state *css)
 	cs->mems_allowed = parent->mems_allowed;
 	cs->effective_mems = parent->mems_allowed;
 	cpumask_copy(cs->cpus_allowed, parent->cpus_allowed);
+	cpumask_copy(cs->cpus_requested, parent->cpus_requested);
 	cpumask_copy(cs->effective_cpus, parent->cpus_allowed);
 	spin_unlock_irq(&callback_lock);
 out_unlock:
@@ -2066,6 +2163,7 @@ static void cpuset_css_free(struct cgroup_subsys_state *css)
 
 	free_cpumask_var(cs->effective_cpus);
 	free_cpumask_var(cs->cpus_allowed);
+	free_cpumask_var(cs->cpus_requested);
 	kfree(cs);
 }
 
@@ -2107,6 +2205,7 @@ struct cgroup_subsys cpuset_cgrp_subsys = {
 	.css_offline	= cpuset_css_offline,
 	.css_free	= cpuset_css_free,
 	.can_attach	= cpuset_can_attach,
+	.allow_attach   = cpuset_allow_attach,
 	.cancel_attach	= cpuset_cancel_attach,
 	.attach		= cpuset_attach,
 	.post_attach	= cpuset_post_attach,
@@ -2130,8 +2229,11 @@ int __init cpuset_init(void)
 		BUG();
 	if (!alloc_cpumask_var(&top_cpuset.effective_cpus, GFP_KERNEL))
 		BUG();
+	if (!alloc_cpumask_var(&top_cpuset.cpus_requested, GFP_KERNEL))
+		BUG();
 
 	cpumask_setall(top_cpuset.cpus_allowed);
+	cpumask_setall(top_cpuset.cpus_requested);
 	nodes_setall(top_cpuset.mems_allowed);
 	cpumask_setall(top_cpuset.effective_cpus);
 	nodes_setall(top_cpuset.effective_mems);
@@ -2265,7 +2367,7 @@ retry:
 		goto retry;
 	}
 
-	cpumask_and(&new_cpus, cs->cpus_allowed, parent_cs(cs)->effective_cpus);
+	cpumask_and(&new_cpus, cs->cpus_requested, parent_cs(cs)->effective_cpus);
 	nodes_and(new_mems, cs->mems_allowed, parent_cs(cs)->effective_mems);
 
 	cpus_updated = !cpumask_equal(&new_cpus, cs->effective_cpus);

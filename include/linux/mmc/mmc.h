@@ -53,6 +53,11 @@
 #define MMC_SEND_TUNING_BLOCK    19   /* adtc                    R1  */
 #define MMC_SEND_TUNING_BLOCK_HS200	21	/* adtc R1  */
 
+#define MMC_TUNING_BLK_PATTERN_4BIT_SIZE	 64
+#define MMC_TUNING_BLK_PATTERN_8BIT_SIZE	128
+extern const u8 tuning_blk_pattern_4bit[MMC_TUNING_BLK_PATTERN_4BIT_SIZE];
+extern const u8 tuning_blk_pattern_8bit[MMC_TUNING_BLK_PATTERN_8BIT_SIZE];
+
   /* class 3 */
 #define MMC_WRITE_DAT_UNTIL_STOP 20   /* adtc [31:0] data addr   R1  */
 
@@ -83,6 +88,11 @@
   /* class 8 */
 #define MMC_APP_CMD              55   /* ac   [31:16] RCA        R1  */
 #define MMC_GEN_CMD              56   /* adtc [0] RD/WR          R1  */
+
+/* class 11 */
+#define MMC_CMDQ_TASK_MGMT       48  /* ac   [31:0] task ID     R1b */
+#define DISCARD_QUEUE		0x1
+#define DISCARD_TASK		0x2
 
 static inline bool mmc_op_multi(u32 opcode)
 {
@@ -272,6 +282,8 @@ struct _mmc_csd {
  * EXT_CSD fields
  */
 
+#define EXT_CSD_CMDQ			15	/* R/W */
+#define EXT_CSD_BARRIER_CTRL		31      /* R/W */
 #define EXT_CSD_FLUSH_CACHE		32      /* W */
 #define EXT_CSD_CACHE_CTRL		33      /* R/W */
 #define EXT_CSD_POWER_OFF_NOTIFICATION	34	/* R/W */
@@ -297,6 +309,7 @@ struct _mmc_csd {
 #define EXT_CSD_PART_CONFIG		179	/* R/W */
 #define EXT_CSD_ERASED_MEM_CONT		181	/* RO */
 #define EXT_CSD_BUS_WIDTH		183	/* R/W */
+#define EXT_CSD_STORBE_SUPPORT		184	/* R/W */
 #define EXT_CSD_HS_TIMING		185	/* R/W */
 #define EXT_CSD_POWER_CLASS		187	/* R/W */
 #define EXT_CSD_REV			192	/* RO */
@@ -324,12 +337,22 @@ struct _mmc_csd {
 #define EXT_CSD_PWR_CL_200_360		237	/* RO */
 #define EXT_CSD_PWR_CL_DDR_52_195	238	/* RO */
 #define EXT_CSD_PWR_CL_DDR_52_360	239	/* RO */
+#define EXT_CSD_CACHE_FLUSH_POLICY	240	/* RO */
 #define EXT_CSD_BKOPS_STATUS		246	/* RO */
 #define EXT_CSD_POWER_OFF_LONG_TIME	247	/* RO */
 #define EXT_CSD_GENERIC_CMD6_TIME	248	/* RO */
 #define EXT_CSD_CACHE_SIZE		249	/* RO, 4 bytes */
 #define EXT_CSD_PWR_CL_DDR_200_360	253	/* RO */
 #define EXT_CSD_FIRMWARE_VERSION	254	/* RO, 8 bytes */
+#define EXT_CSD_DEVICE_LIFE_TIME_EST_TYPE_A	268	/* RO, 8 bytes */
+#define EXT_CSD_DEVICE_LIFE_TIME_EST_TYPE_B	269	/* RO, 8 bytes */
+#define EXT_CSD_CMDQ_DEPTH		307	/* RO */
+#define EXT_CSD_CMDQ_SUPPORT		308	/* RO */
+#define EXT_CSD_BARRIER_SUPPORT		486	/* RO */
+#define EXT_CSD_TAG_UNIT_SIZE		498	/* RO */
+#define EXT_CSD_PRE_EOL_INFO		267	/* RO */
+#define EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A	268	/* RO */
+#define EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B	269	/* RO */
 #define EXT_CSD_SUPPORTED_MODE		493	/* RO */
 #define EXT_CSD_TAG_UNIT_SIZE		498	/* RO */
 #define EXT_CSD_DATA_TAG_SUPPORT	499	/* RO */
@@ -342,7 +365,8 @@ struct _mmc_csd {
  * EXT_CSD field definitions
  */
 
-#define EXT_CSD_WR_REL_PARAM_EN		(1<<2)
+#define EXT_CSD_WR_REL_PARAM_EN			(1<<2)
+#define EXT_CSD_WR_REL_PARAM_EN_RPMB_REL_WR	(1<<4)
 
 #define EXT_CSD_BOOT_WP_B_PWR_WP_DIS	(0x40)
 #define EXT_CSD_BOOT_WP_B_PERM_WP_DIS	(0x10)
@@ -386,6 +410,7 @@ struct _mmc_csd {
 #define EXT_CSD_BUS_WIDTH_8	2	/* Card is in 8 bit mode */
 #define EXT_CSD_DDR_BUS_WIDTH_4	5	/* Card is in 4 bit DDR mode */
 #define EXT_CSD_DDR_BUS_WIDTH_8	6	/* Card is in 8 bit DDR mode */
+#define EXT_CSD_STROBE_ENHANCED_EN	(1 << 7) /* Card in enhanced strobe mode */
 
 #define EXT_CSD_TIMING_BC	0	/* Backwards compatility */
 #define EXT_CSD_TIMING_HS	1	/* High speed */

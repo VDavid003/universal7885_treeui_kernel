@@ -24,6 +24,10 @@
 #include <linux/percpu-refcount.h>
 #include <linux/scatterlist.h>
 
+#ifdef CONFIG_MMC_SRPMB
+#include <linux/mmc/ioctl.h>
+#endif
+
 struct module;
 struct scsi_ioctl_command;
 
@@ -197,6 +201,9 @@ struct request {
 
 	/* for bidi */
 	struct request *next_rq;
+
+	ktime_t			lat_hist_io_start;
+	int			lat_hist_enabled;
 };
 
 static inline unsigned short req_get_ioprio(struct request *req)
@@ -399,6 +406,8 @@ struct request_queue {
 
 	unsigned int		nr_sorted;
 	unsigned int		in_flight[2];
+	unsigned long long	in_flight_time;
+	ktime_t			in_flight_stamp;
 	/*
 	 * Number of active block driver functions for which blk_drain_queue()
 	 * must wait. Must be incremented around functions that unlock the
@@ -434,6 +443,7 @@ struct request_queue {
 	unsigned int		flush_flags;
 	unsigned int		flush_not_queueable:1;
 	struct blk_flush_queue	*fq;
+	unsigned long           flush_ios;
 
 	struct list_head	requeue_list;
 	spinlock_t		requeue_lock;
@@ -822,7 +832,7 @@ bool blk_poll(struct request_queue *q, blk_qc_t cookie);
 
 static inline struct request_queue *bdev_get_queue(struct block_device *bdev)
 {
-	return bdev->bd_disk->queue;	/* this is never NULL */
+	return bdev->bd_queue;	/* this is never NULL */
 }
 
 /*
@@ -1116,8 +1126,12 @@ static inline struct request *blk_map_queue_find_tag(struct blk_queue_tag *bqt,
 }
 
 #define BLKDEV_DISCARD_SECURE  0x01    /* secure discard */
+#define BLKDEV_DISCARD_SYNC	0x02	/* handle discard command as sync req */
 
 extern int blkdev_issue_flush(struct block_device *, gfp_t, sector_t *);
+extern int __blkdev_issue_discard(struct block_device *bdev, sector_t sector,
+		sector_t nr_sects, gfp_t gfp_mask, unsigned long flags,
+		struct bio **biop);
 extern int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 		sector_t nr_sects, gfp_t gfp_mask, unsigned long flags);
 extern int blkdev_issue_write_same(struct block_device *bdev, sector_t sector,
@@ -1145,7 +1159,7 @@ extern int blk_verify_command(unsigned char *cmd, fmode_t has_write_perm);
 enum blk_default_limits {
 	BLK_MAX_SEGMENTS	= 128,
 	BLK_SAFE_MAX_SECTORS	= 255,
-	BLK_DEF_MAX_SECTORS	= 2560,
+	BLK_DEF_MAX_SECTORS	= 1024,
 	BLK_MAX_SEGMENT_SIZE	= 65536,
 	BLK_SEG_BOUNDARY_MASK	= 0xFFFFFFFFUL,
 };
@@ -1647,6 +1661,11 @@ struct block_device_operations {
 	void (*swap_slot_free_notify) (struct block_device *, unsigned long);
 	struct module *owner;
 	const struct pr_ops *pr_ops;
+
+#ifdef CONFIG_MMC_SRPMB
+	int (*srpmb_access) (struct block_device *bdev, struct mmc_ioc_cmd *icmd);
+	void (*get_card) (struct block_device *bdev, bool);
+#endif
 };
 
 extern int __blkdev_driver_ioctl(struct block_device *, fmode_t, unsigned int,
@@ -1656,6 +1675,62 @@ extern int bdev_write_page(struct block_device *, sector_t, struct page *,
 						struct writeback_control *);
 extern long bdev_direct_access(struct block_device *, sector_t,
 		void __pmem **addr, unsigned long *pfn, long size);
+
+/*
+ * X-axis for IO latency histogram support.
+ */
+static const u_int64_t latency_x_axis_us[] = {
+	100,
+	200,
+	300,
+	400,
+	500,
+	600,
+	700,
+	800,
+	900,
+	1000,
+	1200,
+	1400,
+	1600,
+	1800,
+	2000,
+	2500,
+	3000,
+	4000,
+	5000,
+	6000,
+	7000,
+	9000,
+	10000
+};
+
+#define BLK_IO_LAT_HIST_DISABLE         0
+#define BLK_IO_LAT_HIST_ENABLE          1
+#define BLK_IO_LAT_HIST_ZERO            2
+
+struct io_latency_state {
+	u_int64_t	latency_y_axis[ARRAY_SIZE(latency_x_axis_us) + 1];
+	u_int64_t	latency_elems;
+	u_int64_t	latency_sum;
+};
+
+static inline void
+blk_update_latency_hist(struct io_latency_state *s, u_int64_t delta_us)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(latency_x_axis_us); i++)
+		if (delta_us < (u_int64_t)latency_x_axis_us[i])
+			break;
+	s->latency_y_axis[i]++;
+	s->latency_elems++;
+	s->latency_sum += delta_us;
+}
+
+ssize_t blk_latency_hist_show(char* name, struct io_latency_state *s,
+		char *buf, int buf_size);
+
 #else /* CONFIG_BLOCK */
 
 struct block_device;
@@ -1702,5 +1777,12 @@ static inline int blkdev_issue_flush(struct block_device *bdev, gfp_t gfp_mask,
 }
 
 #endif /* CONFIG_BLOCK */
+
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+#define SIO_PATCH_VERSION(name, major, minor, description)	\
+	static const char *sio_##name##_##major##_##minor __attribute__ ((used, section("sio_patches"))) = (#name " " #major "." #minor " " description)
+#else
+#define SIO_PATCH_VERSION(name, major, minor, description)
+#endif
 
 #endif

@@ -1040,4 +1040,11 @@ config GPIO_VIPERBOARD
 
 endmenu
 
+config SEC_CONNECTOR_DETECTOR
+	tristate "Setting Samsung Connector Detector feature"
+	depends on SEC_FACTORY
+	help
+	  To detect connection of connector, set this feature.
+	  This feature should be enabled for factory mode.
+
 endif

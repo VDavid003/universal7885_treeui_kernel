@@ -51,6 +51,8 @@ obj-$(CONFIG_ATH_CARDS)		+= ath/
 
 obj-$(CONFIG_MAC80211_HWSIM)	+= mac80211_hwsim.o
 
+obj-$(CONFIG_VIRT_WIFI)	+= virt_wifi.o
+
 obj-$(CONFIG_WL_TI)	+= ti/
 
 obj-$(CONFIG_MWIFIEX)	+= mwifiex/
@@ -60,3 +62,4 @@ obj-$(CONFIG_BRCMSMAC)	+= brcm80211/
 
 obj-$(CONFIG_CW1200)	+= cw1200/
 obj-$(CONFIG_RSI_91X)	+= rsi/
+obj-$(CONFIG_SCSC_WLAN)	+= scsc/

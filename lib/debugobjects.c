@@ -263,6 +263,8 @@ static void debug_print_object(struct debug_obj *obj, char *msg)
 			descr->name, hint);
 	}
 	debug_objects_warnings++;
+
+	BUG();
 }
 
 /*

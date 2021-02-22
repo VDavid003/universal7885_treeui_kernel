@@ -1508,6 +1508,13 @@ struct xhci_hub {
 	u8	psi_uid_count;
 };
 
+/*
+ * Sometimes deadlock occurred between hub_event and remove_hcd.
+ * In order to prevent it, waiting for completion of hub_event was added.
+ * This is a timeout (300msec) value for the waiting.
+ */
+#define XHCI_HUB_EVENT_TIMEOUT	(300)
+
 /* There is one xhci_hcd structure per controller */
 struct xhci_hcd {
 	struct usb_hcd *main_hcd;
@@ -1639,6 +1646,8 @@ struct xhci_hcd {
 #define XHCI_BROKEN_STREAMS	(1 << 19)
 #define XHCI_PME_STUCK_QUIRK	(1 << 20)
 #define XHCI_MISSING_CAS	(1 << 24)
+/* For enabling USB2.0 L1 mode */
+#define XHCI_LPM_L1_SUPPORT	(1 << 25)
 	unsigned int		num_active_eps;
 	unsigned int		limit_active_eps;
 	/* There are two roothubs to keep track of bus suspend info for */
@@ -1665,6 +1674,7 @@ struct xhci_hcd {
 	u32			port_status_u0;
 /* Compliance Mode Timer Triggered every 2 seconds */
 #define COMP_MODE_RCVRY_MSECS 2000
+
 };
 
 /* Platform specific overrides to generic XHCI hc_driver ops */
@@ -1921,7 +1931,6 @@ void xhci_queue_config_ep_quirk(struct xhci_hcd *xhci,
 		struct xhci_dequeue_state *deq_state);
 void xhci_stop_endpoint_command_watchdog(unsigned long arg);
 void xhci_handle_command_timeout(struct work_struct *work);
-
 void xhci_ring_ep_doorbell(struct xhci_hcd *xhci, unsigned int slot_id,
 		unsigned int ep_index, unsigned int stream_id);
 void xhci_cleanup_command_queue(struct xhci_hcd *xhci);

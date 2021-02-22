@@ -183,7 +183,7 @@ EXPORT_SYMBOL(dev_base_lock);
 static DEFINE_SPINLOCK(napi_hash_lock);
 
 static unsigned int napi_gen_id = NR_CPUS;
-static DEFINE_HASHTABLE(napi_hash, 8);
+static DEFINE_READ_MOSTLY_HASHTABLE(napi_hash, 8);
 
 static seqcount_t devnet_rename_seq;
 
@@ -4630,9 +4630,17 @@ static void net_rps_action_and_irq_enable(struct softnet_data *sd)
 		while (remsd) {
 			struct softnet_data *next = remsd->rps_ipi_next;
 
-			if (cpu_online(remsd->cpu))
+			if (cpu_online(remsd->cpu)) {
 				smp_call_function_single_async(remsd->cpu,
 							   &remsd->csd);
+			} else {
+				pr_err("%s(), cpu was offline and IPI was not "
+				"delivered so clean up NAPI", __func__);
+				rps_lock(remsd);
+				remsd->backlog.state = 0;
+				rps_unlock(remsd);
+
+			}
 			remsd = next;
 		}
 	} else
@@ -4676,7 +4684,11 @@ static int process_backlog(struct napi_struct *napi, int quota)
 			input_queue_head_incr(sd);
 			if (++work >= quota) {
 				local_irq_enable();
+#ifdef CONFIG_MODEM_IF_NET_GRO
+				goto state_changed;
+#else
 				return work;
+#endif
 			}
 		}
 
@@ -4701,6 +4713,12 @@ static int process_backlog(struct napi_struct *napi, int quota)
 		rps_unlock(sd);
 	}
 	local_irq_enable();
+
+#ifdef CONFIG_MODEM_IF_NET_GRO
+state_changed:
+	napi_gro_flush(napi, false);
+	sd->current_napi = NULL;
+#endif
 
 	return work;
 }
@@ -4908,6 +4926,11 @@ static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 	 */
 	work = 0;
 	if (test_bit(NAPI_STATE_SCHED, &n->state)) {
+#ifdef CONFIG_MODEM_IF_NET_GRO
+		struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+		sd->current_napi = n;
+#endif
 		work = n->poll(n, weight);
 		trace_napi_poll(n);
 	}
@@ -4950,6 +4973,20 @@ out_unlock:
 
 	return work;
 }
+
+#if defined(CONFIG_SEC_SIPC_MODEM_IF) || defined(CONFIG_SEC_SIPC_DUAL_MODEM_IF)
+struct napi_struct *napi_get_current(void)
+{
+#ifdef CONFIG_MODEM_IF_NET_GRO
+	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+	return sd->current_napi;
+#else
+	return NULL;
+#endif
+}
+EXPORT_SYMBOL(napi_get_current);
+#endif
 
 static void net_rx_action(struct softirq_action *h)
 {
@@ -6023,7 +6060,11 @@ int __dev_change_flags(struct net_device *dev, unsigned int flags)
 
 	dev->flags = (flags & (IFF_DEBUG | IFF_NOTRAILERS | IFF_NOARP |
 			       IFF_DYNAMIC | IFF_MULTICAST | IFF_PORTSEL |
-			       IFF_AUTOMEDIA)) |
+			       IFF_AUTOMEDIA 
+#ifdef CONFIG_MPTCP
+					 | IFF_NOMULTIPATH | IFF_MPBACKUP
+#endif
+)) |
 		     (dev->flags & (IFF_UP | IFF_VOLATILE | IFF_PROMISC |
 				    IFF_ALLMULTI));
 

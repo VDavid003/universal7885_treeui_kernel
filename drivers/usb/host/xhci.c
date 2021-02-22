@@ -680,6 +680,10 @@ void xhci_stop(struct usb_hcd *hcd)
 	u32 temp;
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
 
+#if defined(CONFIG_USB_HOST_SAMSUNG_FEATURE)
+	if (!usb_hcd_is_primary_hcd(hcd))
+	return;
+#endif
 	mutex_lock(&xhci->mutex);
 
 	if (!(xhci->xhc_state & XHCI_STATE_HALTED)) {
@@ -693,10 +697,12 @@ void xhci_stop(struct usb_hcd *hcd)
 		spin_unlock_irq(&xhci->lock);
 	}
 
+#ifndef CONFIG_USB_HOST_SAMSUNG_FEATURE
 	if (!usb_hcd_is_primary_hcd(hcd)) {
 		mutex_unlock(&xhci->mutex);
 		return;
 	}
+#endif
 
 	xhci_cleanup_msix(xhci);
 
@@ -4184,6 +4190,11 @@ int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 		return -EPERM;
 
 	if (udev->usb2_hw_lpm_capable != 1)
+		return -EPERM;
+
+	/* some USB3.0 memory stick doesn't support L1 mode,
+	  * so we add XHCI_LPM_L1_DISABLE quirks for disabling L1 mode */
+	if (!(xhci->quirks & XHCI_LPM_L1_SUPPORT))
 		return -EPERM;
 
 	spin_lock_irqsave(&xhci->lock, flags);

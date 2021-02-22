@@ -849,6 +849,7 @@ static int smsc75xx_phy_initialize(struct usbnet *dev)
 	/* phy workaround for gig link */
 	smsc75xx_phy_gig_workaround(dev);
 
+	
 	smsc75xx_mdio_write(dev->net, dev->mii.phy_id, MII_ADVERTISE,
 		ADVERTISE_ALL | ADVERTISE_CSMA | ADVERTISE_PAUSE_CAP |
 		ADVERTISE_PAUSE_ASYM);

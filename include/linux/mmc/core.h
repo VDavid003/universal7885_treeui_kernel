@@ -136,10 +136,33 @@ struct mmc_request {
 	struct completion	completion;
 	void			(*done)(struct mmc_request *);/* completion function */
 	struct mmc_host		*host;
+	struct mmc_cmdq_req	*cmdq_req;
+	struct request		*req;		/* associated block request */
+	struct list_head	eh_entry;
+	ktime_t			io_start;
+#ifdef CONFIG_BLOCK
+	int			lat_hist_enabled;
+#endif
+	struct list_head	cmdq_entry;
 };
 
 struct mmc_card;
 struct mmc_async_req;
+struct mmc_cmdq_req;
+
+extern int mmc_cmdq_discard_queue(struct mmc_host *host, u32 tasks);
+extern int mmc_cmdq_halt(struct mmc_host *host, bool enable);
+extern int mmc_cmdq_halt_on_empty_queue(struct mmc_host *host);
+extern void mmc_cmdq_post_req(struct mmc_host *host, struct mmc_request *mrq,
+			      int err);
+extern int mmc_cmdq_start_req(struct mmc_host *host,
+			      struct mmc_cmdq_req *cmdq_req);
+extern int mmc_cmdq_prepare_flush(struct mmc_command *cmd);
+extern int mmc_cmdq_wait_for_dcmd(struct mmc_host *host,
+			struct mmc_cmdq_req *cmdq_req);
+extern int mmc_cmdq_erase(struct mmc_cmdq_req *cmdq_req,
+	      struct mmc_card *card, unsigned int from, unsigned int nr,
+	      unsigned int arg);
 
 extern int mmc_stop_bkops(struct mmc_card *);
 extern int mmc_read_bkops_status(struct mmc_card *);
@@ -153,6 +176,9 @@ extern int mmc_wait_for_app_cmd(struct mmc_host *, struct mmc_card *,
 	struct mmc_command *, int);
 extern void mmc_start_bkops(struct mmc_card *card, bool from_exception);
 extern int mmc_switch(struct mmc_card *, u8, u8, u8, unsigned int);
+extern int __mmc_switch_cmdq_mode(struct mmc_command *cmd, u8 set, u8 index,
+				  u8 value, unsigned int timeout_ms,
+				  bool use_busy_signal, bool ignore_timeout);
 extern int mmc_send_tuning(struct mmc_host *host, u32 opcode, int *cmd_error);
 extern int mmc_get_ext_csd(struct mmc_card *card, u8 **new_ext_csd);
 
@@ -188,11 +214,14 @@ extern unsigned int mmc_align_data_size(struct mmc_card *, unsigned int);
 
 extern int __mmc_claim_host(struct mmc_host *host, atomic_t *abort);
 extern void mmc_release_host(struct mmc_host *host);
+extern int mmc_try_claim_host(struct mmc_host *host, unsigned int delay);
 
 extern void mmc_get_card(struct mmc_card *card);
 extern void mmc_put_card(struct mmc_card *card);
+extern void __mmc_put_card(struct mmc_card *card);
 
 extern int mmc_flush_cache(struct mmc_card *);
+extern int mmc_cache_barrier(struct mmc_card *);
 
 extern int mmc_detect_card_removed(struct mmc_host *host);
 

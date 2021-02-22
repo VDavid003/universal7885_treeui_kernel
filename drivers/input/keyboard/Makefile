@@ -4,6 +4,8 @@
 
 # Each configuration option enables a list of files.
 
+obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_FT1804)	+= abov_touchkey_ft1804.o
+obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_T316)	+= abov_touchkey_ft1804.o
 obj-$(CONFIG_KEYBOARD_ADP5520)		+= adp5520-keys.o
 obj-$(CONFIG_KEYBOARD_ADP5588)		+= adp5588-keys.o
 obj-$(CONFIG_KEYBOARD_ADP5589)		+= adp5589-keys.o
@@ -18,6 +20,7 @@ obj-$(CONFIG_KEYBOARD_CROS_EC)		+= cros_ec_keyb.o
 obj-$(CONFIG_KEYBOARD_DAVINCI)		+= davinci_keyscan.o
 obj-$(CONFIG_KEYBOARD_EP93XX)		+= ep93xx_keypad.o
 obj-$(CONFIG_KEYBOARD_GOLDFISH_EVENTS)	+= goldfish_events.o
+obj-$(CONFIG_KEYBOARD_GOLDFISH_ROTARY)	+= goldfish_rotary.o
 obj-$(CONFIG_KEYBOARD_GPIO)		+= gpio_keys.o
 obj-$(CONFIG_KEYBOARD_GPIO_POLLED)	+= gpio_keys_polled.o
 obj-$(CONFIG_KEYBOARD_TCA6416)		+= tca6416-keypad.o
@@ -63,3 +66,6 @@ obj-$(CONFIG_KEYBOARD_TEGRA)		+= tegra-kbc.o
 obj-$(CONFIG_KEYBOARD_TWL4030)		+= twl4030_keypad.o
 obj-$(CONFIG_KEYBOARD_XTKBD)		+= xtkbd.o
 obj-$(CONFIG_KEYBOARD_W90P910)		+= w90p910_keypad.o
+obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_3X6)	+= abov_touchkey_3x6.o
+obj-$(CONFIG_KEYBOARD_TC300K)		+= tc300k.o
+

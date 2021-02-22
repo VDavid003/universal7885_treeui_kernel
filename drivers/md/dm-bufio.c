@@ -46,7 +46,7 @@
 /*
  * The nr of bytes of cached data to keep around.
  */
-#define DM_BUFIO_DEFAULT_RETAIN_BYTES   (256 * 1024)
+#define DM_BUFIO_DEFAULT_RETAIN_BYTES   (1024 * 1024)
 
 /*
  * The number of bvec entries that are embedded directly in the buffer.
@@ -837,6 +837,7 @@ static struct dm_buffer *__alloc_buffer_wait_no_callback(struct dm_bufio_client 
 
 		if (nf == NF_PREFETCH)
 			return NULL;
+		
 
 		if (dm_bufio_cache_size_latch != 1 && !tried_noio_alloc) {
 			dm_bufio_unlock(c);

@@ -108,7 +108,7 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 	 * Ok, the task did not get scheduled for more than 2 minutes,
 	 * complain:
 	 */
-	pr_err("INFO: task %s:%d blocked for more than %ld seconds.\n",
+	pr_auto(ASL1, "INFO: task %s:%d blocked for more than %ld seconds.\n",
 		t->comm, t->pid, timeout);
 	pr_err("      %s %s %.*s\n",
 		print_tainted(), init_utsname()->release,

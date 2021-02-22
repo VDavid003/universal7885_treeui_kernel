@@ -19,6 +19,7 @@
 
 #include <linux/gfp.h>
 #include <linux/acpi.h>
+#include <linux/bootmem.h>
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/genalloc.h>
@@ -28,6 +29,8 @@
 #include <linux/swiotlb.h>
 
 #include <asm/cacheflush.h>
+
+static int swiotlb __read_mostly;
 
 static pgprot_t __get_dma_pgprot(struct dma_attrs *attrs, pgprot_t prot,
 				 bool coherent)
@@ -39,8 +42,8 @@ static pgprot_t __get_dma_pgprot(struct dma_attrs *attrs, pgprot_t prot,
 
 static struct gen_pool *atomic_pool;
 
-#define DEFAULT_DMA_COHERENT_POOL_SIZE  SZ_256K
-static size_t atomic_pool_size = DEFAULT_DMA_COHERENT_POOL_SIZE;
+#define DEFAULT_DMA_COHERENT_POOL_SIZE  SZ_2M
+static size_t atomic_pool_size __initdata = DEFAULT_DMA_COHERENT_POOL_SIZE;
 
 static int __init early_coherent_pool(char *p)
 {
@@ -170,7 +173,7 @@ static void *__dma_alloc(struct device *dev, size_t size,
 	/* create a coherent mapping */
 	page = virt_to_page(ptr);
 	coherent_ptr = dma_common_contiguous_remap(page, size, VM_USERMAP,
-						   prot, NULL);
+						   prot, __builtin_return_address(0));
 	if (!coherent_ptr)
 		goto no_map;
 
@@ -231,10 +234,11 @@ static int __swiotlb_map_sg_attrs(struct device *dev, struct scatterlist *sgl,
 	int i, ret;
 
 	ret = swiotlb_map_sg_attrs(dev, sgl, nelems, dir, attrs);
-	if (!is_device_dma_coherent(dev))
+	if (!dma_get_attr(DMA_ATTR_SKIP_CPU_SYNC, attrs)) {
 		for_each_sg(sgl, sg, ret, i)
 			__dma_map_area(phys_to_virt(dma_to_phys(dev, sg->dma_address)),
-				       sg->length, dir);
+					sg->length, dir);
+	}
 
 	return ret;
 }
@@ -247,10 +251,11 @@ static void __swiotlb_unmap_sg_attrs(struct device *dev,
 	struct scatterlist *sg;
 	int i;
 
-	if (!is_device_dma_coherent(dev))
+	if (!dma_get_attr(DMA_ATTR_SKIP_CPU_SYNC, attrs)) {
 		for_each_sg(sgl, sg, nelems, i)
 			__dma_unmap_area(phys_to_virt(dma_to_phys(dev, sg->dma_address)),
-					 sg->length, dir);
+					sg->length, dir);
+	}
 	swiotlb_unmap_sg_attrs(dev, sgl, nelems, dir, attrs);
 }
 
@@ -341,6 +346,13 @@ static int __swiotlb_get_sgtable(struct device *dev, struct sg_table *sgt,
 	return ret;
 }
 
+static int __swiotlb_dma_supported(struct device *hwdev, u64 mask)
+{
+	if (swiotlb)
+		return swiotlb_dma_supported(hwdev, mask);
+	return 1;
+}
+
 static struct dma_map_ops swiotlb_dma_ops = {
 	.alloc = __dma_alloc,
 	.free = __dma_free,
@@ -354,9 +366,41 @@ static struct dma_map_ops swiotlb_dma_ops = {
 	.sync_single_for_device = __swiotlb_sync_single_for_device,
 	.sync_sg_for_cpu = __swiotlb_sync_sg_for_cpu,
 	.sync_sg_for_device = __swiotlb_sync_sg_for_device,
-	.dma_supported = swiotlb_dma_supported,
+	.dma_supported = __swiotlb_dma_supported,
 	.mapping_error = swiotlb_dma_mapping_error,
 };
+
+static void *arm_exynos_dma_mcode_alloc(struct device *dev, size_t size,
+	dma_addr_t *handle, gfp_t gfp, struct dma_attrs *attrs);
+static void arm_exynos_dma_mcode_free(struct device *dev, size_t size, void *cpu_addr,
+				  dma_addr_t handle, struct dma_attrs *attrs);
+
+struct dma_map_ops arm_exynos_dma_mcode_ops = {
+	.alloc			= arm_exynos_dma_mcode_alloc,
+	.free			= arm_exynos_dma_mcode_free,
+};
+EXPORT_SYMBOL(arm_exynos_dma_mcode_ops);
+
+static void *arm_exynos_dma_mcode_alloc(struct device *dev, size_t size,
+	dma_addr_t *handle, gfp_t gfp, struct dma_attrs *attrs)
+{
+	void *addr;
+
+	if (!*handle)
+		return NULL;
+
+	addr = ioremap(*handle, size);
+
+	return addr;
+}
+
+static void arm_exynos_dma_mcode_free(struct device *dev, size_t size, void *cpu_addr,
+				  dma_addr_t handle, struct dma_attrs *attrs)
+{
+	iounmap(cpu_addr);
+}
+
+extern int swiotlb_late_init_with_default_size(size_t default_size);
 
 static int __init atomic_pool_init(void)
 {
@@ -513,6 +557,9 @@ EXPORT_SYMBOL(dummy_dma_ops);
 
 static int __init arm64_dma_init(void)
 {
+	if (swiotlb_force || max_pfn > (arm64_dma_phys_limit >> PAGE_SHIFT))
+		swiotlb = 1;
+
 	return atomic_pool_init();
 }
 arch_initcall(arm64_dma_init);
@@ -843,7 +890,10 @@ static bool do_iommu_attach(struct device *dev, const struct iommu_ops *ops,
 	if (iommu_dma_init_domain(domain, dma_base, size))
 		goto out_detach;
 
-	dev->archdata.dma_ops = &iommu_dma_ops;
+	if (!domain->iova_cookie)
+		dev->archdata.dma_ops = &swiotlb_dma_ops;
+	else
+		dev->archdata.dma_ops = &iommu_dma_ops;
 	return true;
 
 out_detach:
@@ -896,7 +946,7 @@ static int __iommu_attach_notifier(struct notifier_block *nb,
 	return 0;
 }
 
-static int register_iommu_dma_ops_notifier(struct bus_type *bus)
+static int __init register_iommu_dma_ops_notifier(struct bus_type *bus)
 {
 	struct notifier_block *nb = kzalloc(sizeof(*nb), GFP_KERNEL);
 	int ret;

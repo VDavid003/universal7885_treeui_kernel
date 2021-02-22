@@ -12,6 +12,36 @@ menuconfig INPUT_KEYBOARD
 
 if INPUT_KEYBOARD
 
+config TOUCHKEY_LIGHT_EFS
+	tristate "touchkey led light with efs"
+	depends on I2C
+	help
+	  Say Y here if you want to use touchkey light efs.
+
+config TOUCHKEY_GRIP
+	tristate "touchkey grip for sar"
+	depends on I2C
+	help
+	  Say Y here if you want to use touchkey grip.
+
+config KEYBOARD_ABOV_TOUCH
+	tristate "Abov FT16XX touchkey"
+	depends on I2C
+	help
+	  Say Y here if you want to use ABOV MC96FT16XX chip as touchkey.
+
+config KEYBOARD_ABOV_TOUCH_FT1804
+	tristate "Abov FT18XX touchkey"
+	depends on I2C
+	help
+	  Say Y here if you want to use ABOV MC96FT18XX chip as touchkey.
+
+config KEYBOARD_ABOV_TOUCH_T316
+	tristate "Abov T316 touchkey"
+	depends on I2C
+	help
+	  Say Y here if you want to use ABOV MC96T316AU chip as touchkey.
+
 config KEYBOARD_ADP5520
 	tristate "Keypad Support for ADP5520 PMIC"
 	depends on PMIC_ADP5520
@@ -525,6 +555,16 @@ config KEYBOARD_GOLDFISH_EVENTS
 	  To compile this driver as a module, choose M here: the
 	  module will be called goldfish-events.
 
+config KEYBOARD_GOLDFISH_ROTARY
+	depends on GOLDFISH
+	tristate "Rotary encoder device for Goldfish"
+	help
+	  Say Y here to get an input event device for the Goldfish virtual
+	  device emulator that acts as a rotary encoder.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called goldfish-rotary.
+
 config KEYBOARD_STOWAWAY
 	tristate "Stowaway keyboard"
 	select SERIO
@@ -719,4 +759,15 @@ config KEYBOARD_BCM
 	  To compile this driver as a module, choose M here: the
 	  module will be called bcm-keypad.
 
+config KEYBOARD_ABOV_TOUCH_3X6
+	tristate "Abov T316 T326 touchkey"
+	depends on I2C
+	help
+	  Say Y here if you want to use ABOV A96T3X6 chip as touchkey.
+
+config KEYBOARD_TC300K
+	tristate "Coreriver TC300K touchkey"
+	depends on I2C
+	help
+	 Say Y if you want use Coreriver TC300K chip as touchkey.
 endif

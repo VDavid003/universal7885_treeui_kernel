@@ -75,7 +75,18 @@ obj-$(CONFIG_MMC_SDHCI_BCM2835)		+= sdhci-bcm2835.o
 obj-$(CONFIG_MMC_SDHCI_IPROC)		+= sdhci-iproc.o
 obj-$(CONFIG_MMC_SDHCI_MSM)		+= sdhci-msm.o
 obj-$(CONFIG_MMC_SDHCI_ST)		+= sdhci-st.o
+obj-$(CONFIG_MMC_CQ_HCI)		+= cmdq_hci.o
 
 ifeq ($(CONFIG_CB710_DEBUG),y)
 	CFLAGS-cb710-mmc	+= -DDEBUG
 endif
+
+ifeq ($(CONFIG_TZDEV)$(CONFIG_TEEGRIS_VERSION),y3)
+subdir-ccflags-y += -I$(srctree)/drivers/misc/tzdev/$(CONFIG_TEEGRIS_VERSION).0
+obj-$(CONFIG_MMC_SRPMB)		+= dw_mmc-srpmb-teegris.o
+else
+obj-$(CONFIG_MMC_SRPMB)		+= dw_mmc-srpmb.o
+endif
+
+obj-$(CONFIG_MMC_DW_EXYNOS_FMP) += dw_mmc-exynos-fmp.o
+obj-$(CONFIG_MMC_DW_EXYNOS_SMU) += dw_mmc-exynos-smu.o

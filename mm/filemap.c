@@ -36,6 +36,18 @@
 #include <linux/rmap.h>
 #include "internal.h"
 
+#ifdef CONFIG_SDP
+#include <sdp/cache_cleanup.h>
+#endif
+
+#ifdef CONFIG_EXT4CRYPT_SDP
+#include "../fs/ext4/sdp/fscrypto_sdp_cache.h"
+#endif
+
+#ifdef CONFIG_PAGE_BOOST_RECORDING
+#include <linux/io_record.h>
+#endif
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
 
@@ -232,6 +244,10 @@ void __delete_from_page_cache(struct page *page, void *shadow,
 			      struct mem_cgroup *memcg)
 {
 	struct address_space *mapping = page->mapping;
+#ifdef CONFIG_SDP
+	if(mapping_sensitive(mapping))
+		sdp_page_cleanup(page);
+#endif
 
 	trace_mm_filemap_delete_from_page_cache(page);
 	/*
@@ -394,18 +410,16 @@ static int __filemap_fdatawait_range(struct address_space *mapping,
 		goto out;
 
 	pagevec_init(&pvec, 0);
-	while ((index <= end) &&
-			(nr_pages = pagevec_lookup_tag(&pvec, mapping, &index,
-			PAGECACHE_TAG_WRITEBACK,
-			min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1)) != 0) {
+	while (index <= end) {
 		unsigned i;
+
+		nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index,
+				end, PAGECACHE_TAG_WRITEBACK);
+		if (!nr_pages)
+			break;
 
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
-
-			/* until radix tree lookup accepts end_index */
-			if (page->index > end)
-				continue;
 
 			wait_on_page_writeback(page);
 			if (TestClearPageError(page))
@@ -1424,9 +1438,10 @@ repeat:
 EXPORT_SYMBOL(find_get_pages_contig);
 
 /**
- * find_get_pages_tag - find and return pages that match @tag
+ * find_get_pages_range_tag - find and return pages in given range matching @tag
  * @mapping:	the address_space to search
  * @index:	the starting page index
+ * @end:	The final page index (inclusive)
  * @tag:	the tag index
  * @nr_pages:	the maximum number of pages
  * @pages:	where the resulting pages are placed
@@ -1434,8 +1449,9 @@ EXPORT_SYMBOL(find_get_pages_contig);
  * Like find_get_pages, except we only return pages which are tagged with
  * @tag.   We update @index to index the next page for the traversal.
  */
-unsigned find_get_pages_tag(struct address_space *mapping, pgoff_t *index,
-			int tag, unsigned int nr_pages, struct page **pages)
+unsigned find_get_pages_range_tag(struct address_space *mapping, pgoff_t *index,
+			pgoff_t end, int tag, unsigned int nr_pages,
+			struct page **pages)
 {
 	struct radix_tree_iter iter;
 	void **slot;
@@ -1449,6 +1465,9 @@ restart:
 	radix_tree_for_each_tagged(slot, &mapping->page_tree,
 				   &iter, *index, tag) {
 		struct page *page;
+
+		if (iter.index > end)
+			break;
 repeat:
 		page = radix_tree_deref_slot(slot);
 		if (unlikely(!page))
@@ -1487,18 +1506,28 @@ repeat:
 		}
 
 		pages[ret] = page;
-		if (++ret == nr_pages)
-			break;
+		if (++ret == nr_pages) {
+			*index = pages[ret - 1]->index + 1;
+			goto out;
+		}
 	}
 
+	/*
+	 * We come here when we got at @end. We take care to not overflow the
+	 * index @index as it confuses some of the callers. This breaks the
+	 * iteration when there is page at index -1 but that is already broken
+	 * anyway.
+	 */
+	if (end == (pgoff_t)-1)
+		*index = (pgoff_t)-1;
+	else
+		*index = end + 1;
+out:
 	rcu_read_unlock();
-
-	if (ret)
-		*index = pages[ret - 1]->index + 1;
 
 	return ret;
 }
-EXPORT_SYMBOL(find_get_pages_tag);
+EXPORT_SYMBOL(find_get_pages_range_tag);
 
 /*
  * CD/DVDs are error prone. When a medium error occurs, the driver may fail
@@ -1552,7 +1581,9 @@ static ssize_t do_generic_file_read(struct file *filp, loff_t *ppos,
 	prev_offset = ra->prev_pos & (PAGE_CACHE_SIZE-1);
 	last_index = (*ppos + iter->count + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
 	offset = *ppos & ~PAGE_CACHE_MASK;
-
+#ifdef CONFIG_PAGE_BOOST_RECORDING
+	record_io_info(filp, index, last_index - index);
+#endif
 	for (;;) {
 		struct page *page;
 		pgoff_t end_index;
@@ -1820,7 +1851,22 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		}
 	}
 
+#ifdef CONFIG_EXT4CRYPT_SDP
+	if (file->f_op->check_sdp_info) {
+		//Check after writeback is completed.
+		if (fscrypt_sdp_file_not_readable(iocb->ki_filp)) {
+			retval = -EIO;
+			goto out;
+		}
+	}
+#endif
+
 	retval = do_generic_file_read(file, ppos, iter, retval);
+#ifdef CONFIG_EXT4CRYPT_SDP
+	if (file->f_op->check_sdp_info) {
+		fscrypt_sdp_unset_file_io_ongoing(iocb->ki_filp);
+	}
+#endif
 out:
 	return retval;
 }
@@ -1860,6 +1906,11 @@ static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
 }
 
 #define MMAP_LOTSAMISS  (100)
+#if CONFIG_MMAP_READAROUND_LIMIT == 0
+int mmap_readaround_limit = VM_MAX_READAHEAD;
+#else
+int mmap_readaround_limit = CONFIG_MMAP_READAROUND_LIMIT;
+#endif
 
 /*
  * Synchronous readahead happens when we don't even find
@@ -1870,6 +1921,7 @@ static void do_sync_mmap_readahead(struct vm_area_struct *vma,
 				   struct file *file,
 				   pgoff_t offset)
 {
+	unsigned int ra_pages;
 	struct address_space *mapping = file->f_mapping;
 
 	/* If we don't want any read-ahead, don't bother */
@@ -1898,9 +1950,10 @@ static void do_sync_mmap_readahead(struct vm_area_struct *vma,
 	/*
 	 * mmap read-around
 	 */
-	ra->start = max_t(long, 0, offset - ra->ra_pages / 2);
-	ra->size = ra->ra_pages;
-	ra->async_size = ra->ra_pages / 4;
+	ra_pages = min_t(unsigned int, ra->ra_pages, mmap_readaround_limit);
+	ra->start = max_t(long, 0, offset - ra_pages / 2);
+	ra->size = ra_pages;
+	ra->async_size = ra_pages / 4;
 	ra_submit(ra, mapping, file);
 }
 
@@ -2078,6 +2131,7 @@ void filemap_map_pages(struct vm_area_struct *vma, struct vm_fault *vmf)
 	struct file *file = vma->vm_file;
 	struct address_space *mapping = file->f_mapping;
 	loff_t size;
+	pgoff_t last_pgoff = vmf->pgoff;
 	struct page *page;
 	unsigned long address = (unsigned long) vmf->virtual_address;
 	unsigned long addr;
@@ -2128,6 +2182,7 @@ repeat:
 		if (file->f_ra.mmap_miss > 0)
 			file->f_ra.mmap_miss--;
 		addr = address + (page->index - vmf->pgoff) * PAGE_SIZE;
+		last_pgoff = page->index;
 		do_set_pte(vma, addr, page, pte, false, false);
 		unlock_page(page);
 		goto next;
@@ -2140,6 +2195,11 @@ next:
 			break;
 	}
 	rcu_read_unlock();
+	
+#ifdef CONFIG_PAGE_BOOST_RECORDING
+	/* end_pgoff is inclusive */
+	record_io_info(file, vmf->pgoff, last_pgoff - vmf->pgoff + 1);
+#endif
 }
 EXPORT_SYMBOL(filemap_map_pages);
 

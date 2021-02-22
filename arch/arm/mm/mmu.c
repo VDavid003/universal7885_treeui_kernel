@@ -572,7 +572,7 @@ static void __init build_mem_type_table(void)
 	 * in the Short-descriptor translation table format descriptors.
 	 */
 	if (cpu_arch == CPU_ARCH_ARMv7 &&
-		(read_cpuid_ext(CPUID_EXT_MMFR0) & 0xF) == 4) {
+		(read_cpuid_ext(CPUID_EXT_MMFR0) & 0xF) >= 4) {
 		user_pmd_table |= PMD_PXNTABLE;
 	}
 #endif
@@ -1574,6 +1574,7 @@ void __init paging_init(const struct machine_desc *mdesc)
 {
 	void *zero_page;
 
+	set_memsize_kernel_type(MEMSIZE_KERNEL_PAGING);
 	build_mem_type_table();
 	prepare_page_table();
 	map_lowmem();
@@ -1593,4 +1594,5 @@ void __init paging_init(const struct machine_desc *mdesc)
 
 	empty_zero_page = virt_to_page(zero_page);
 	__flush_dcache_page(NULL, empty_zero_page);
+	set_memsize_kernel_type(MEMSIZE_KERNEL_OTHERS);
 }

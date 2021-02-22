@@ -31,6 +31,19 @@ obj-$(CONFIG_ATMEL_AIC5_IRQ)	+= irq-atmel-aic-common.o irq-atmel-aic5.o
 obj-$(CONFIG_I8259)			+= irq-i8259.o
 obj-$(CONFIG_IMGPDC_IRQ)		+= irq-imgpdc.o
 obj-$(CONFIG_IRQ_MIPS_CPU)		+= irq-mips-cpu.o
+obj-$(CONFIG_MADERA_IRQ)		+= irq-madera.o
+ifeq ($(CONFIG_MADERA_IRQ_CS47L35),y)
+obj-$(CONFIG_MADERA_IRQ)		+= irq-madera-cs47l35.o
+endif
+ifeq ($(CONFIG_MADERA_IRQ_CS47L85),y)
+obj-$(CONFIG_MADERA_IRQ)		+= irq-madera-cs47l85.o
+endif
+ifeq ($(CONFIG_MADERA_IRQ_CS47L90),y)
+obj-$(CONFIG_MADERA_IRQ)		+= irq-madera-cs47l90.o
+endif
+ifeq ($(CONFIG_MADERA_IRQ_CS47L92),y)
+obj-$(CONFIG_MADERA_IRQ)		+= irq-madera-cs47l92.o
+endif
 obj-$(CONFIG_SIRF_IRQ)			+= irq-sirfsoc.o
 obj-$(CONFIG_RENESAS_INTC_IRQPIN)	+= irq-renesas-intc-irqpin.o
 obj-$(CONFIG_RENESAS_IRQC)		+= irq-renesas-irqc.o
@@ -55,3 +68,4 @@ obj-$(CONFIG_RENESAS_H8S_INTC)		+= irq-renesas-h8s.o
 obj-$(CONFIG_ARCH_SA1100)		+= irq-sa11x0.o
 obj-$(CONFIG_INGENIC_IRQ)		+= irq-ingenic.o
 obj-$(CONFIG_IMX_GPCV2)			+= irq-imx-gpcv2.o
+obj-$(CONFIG_GOLDFISH_PIC) 		+= irq-goldfish-pic.o

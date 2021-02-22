@@ -293,6 +293,8 @@ static int __put_v4l2_format32(struct v4l2_format __user *kp,
 		return copy_in_user(&up->fmt.sdr, &kp->fmt.sdr,
 				    sizeof(kp->fmt.sdr)) ? -EFAULT : 0;
 	default:
+		pr_info("compat_ioctl32: unexpected VIDIOC_FMT type %d\n",
+								kp->type);
 		return -EINVAL;
 	}
 }
@@ -495,8 +497,9 @@ static int get_v4l2_buffer32(struct v4l2_buffer __user *kp,
 	    get_user(memory, &up->memory) ||
 	    put_user(memory, &kp->memory) ||
 	    get_user(length, &up->length) ||
-	    put_user(length, &kp->length))
-		return -EFAULT;
+	    put_user(length, &kp->length) ||
+		assign_in_user(&kp->reserved, &up->reserved))
+			return -EFAULT;
 
 	if (V4L2_TYPE_IS_OUTPUT(type))
 		if (assign_in_user(&kp->bytesused, &up->bytesused) ||
@@ -504,7 +507,10 @@ static int get_v4l2_buffer32(struct v4l2_buffer __user *kp,
 		    assign_in_user(&kp->timestamp.tv_sec,
 				   &up->timestamp.tv_sec) ||
 		    assign_in_user(&kp->timestamp.tv_usec,
-				   &up->timestamp.tv_usec))
+				   &up->timestamp.tv_usec)||
+			copy_in_user(&kp->timecode, &up->timecode, sizeof(struct v4l2_timecode)) ||
+			assign_in_user(&kp->sequence, &up->sequence) ||
+			assign_in_user(&kp->reserved2, &up->reserved2))
 			return -EFAULT;
 
 	if (V4L2_TYPE_IS_MULTIPLANAR(type)) {

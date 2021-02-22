@@ -13,8 +13,49 @@
 #include <linux/regmap.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <soc/samsung/acpm_mfd.h>
 
 #include "internal.h"
+
+#ifdef CONFIG_EXYNOS_ACPM
+static int regmap_apm_byte_reg_read(void *context, unsigned int reg,
+		unsigned int *val)
+{
+	struct device *dev = context;
+	struct i2c_client *i2c = to_i2c_client(dev);
+	int ret;
+	u8 reg_val;
+
+	if (reg > 0xff)
+		return -EINVAL;
+
+	ret = exynos_acpm_read_reg(i2c->addr, reg, &reg_val);
+	*val = reg_val;
+
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int regmap_apm_byte_reg_write(void *context, unsigned int reg,
+		unsigned int val)
+{
+	struct device *dev = context;
+	struct i2c_client *i2c = to_i2c_client(dev);
+
+	if (val > 0xff || reg > 0xff)
+		return -EINVAL;
+
+	return exynos_acpm_write_reg(i2c->addr, reg, val);
+}
+
+static struct regmap_bus regmap_apm_byte = {
+	.reg_write = regmap_apm_byte_reg_write,
+	.reg_read = regmap_apm_byte_reg_read,
+};
+#endif
+
 
 static int regmap_smbus_byte_reg_read(void *context, unsigned int reg,
 				      unsigned int *val)
@@ -182,23 +223,61 @@ static int regmap_i2c_read(void *context,
 	struct i2c_msg xfer[2];
 	int ret;
 
-	xfer[0].addr = i2c->addr;
-	xfer[0].flags = 0;
-	xfer[0].len = reg_size;
-	xfer[0].buf = (void *)reg;
+	if (i2c->flags & I2C_CLIENT_TEN) {
+		xfer[0].flags = I2C_M_RD|I2C_CLIENT_TEN;
+		xfer[0].len = val_size;
+		xfer[0].buf = (void *)reg;
+		xfer[0].addr = xfer[0].buf[0] +
+			(((i2c->addr & 0x7f) << 8) & 0xff00);
+		xfer[0].buf = val;
 
-	xfer[1].addr = i2c->addr;
-	xfer[1].flags = I2C_M_RD;
-	xfer[1].len = val_size;
-	xfer[1].buf = val;
+		ret = i2c_transfer(i2c->adapter, xfer, 1);
 
-	ret = i2c_transfer(i2c->adapter, xfer, 2);
-	if (ret == 2)
-		return 0;
-	else if (ret < 0)
-		return ret;
-	else
-		return -EIO;
+		if (ret == 1)
+			return 0;
+		else if (ret < 0)
+			return ret;
+		else
+			return -EIO;
+	} else if (i2c->flags & I2C_CLIENT_SPEEDY) {
+		xfer[0].flags = I2C_M_RD|I2C_CLIENT_SPEEDY;
+		xfer[0].len = val_size;
+		xfer[0].buf = (void *)reg;
+		/*
+		 * The upper 4bit of 12bit speedy slave address is
+		 * for a device id.
+		 * 8bit is for device register offset.
+		 */
+		xfer[0].addr = xfer[0].buf[0] + ((i2c->addr & 0xf) << 8);
+		xfer[0].buf = val;
+
+		ret = i2c_transfer(i2c->adapter, xfer, 1);
+
+		if (ret == 1)
+			return 0;
+		else if (ret < 0)
+			return ret;
+		else
+			return -EIO;
+	} else {
+		xfer[0].addr = i2c->addr;
+		xfer[0].flags = 0;
+		xfer[0].len = reg_size;
+		xfer[0].buf = (void *)reg;
+
+		xfer[1].addr = i2c->addr;
+		xfer[1].flags = I2C_M_RD;
+		xfer[1].len = val_size;
+		xfer[1].buf = val;
+
+		ret = i2c_transfer(i2c->adapter, xfer, 2);
+		if (ret == 2)
+			return 0;
+		else if (ret < 0)
+			return ret;
+		else
+			return -EIO;
+	}
 }
 
 static struct regmap_bus regmap_i2c = {
@@ -257,6 +336,13 @@ static struct regmap_bus regmap_i2c_smbus_i2c_block = {
 static const struct regmap_bus *regmap_get_i2c_bus(struct i2c_client *i2c,
 					const struct regmap_config *config)
 {
+	if(config->name)
+	{
+#ifdef CONFIG_EXYNOS_ACPM
+		if(strncmp(config->name, "speedy", sizeof("speedy")))
+			return &regmap_apm_byte;
+#endif
+	}
 	if (i2c_check_functionality(i2c->adapter, I2C_FUNC_I2C))
 		return &regmap_i2c;
 	else if (config->reg_bits == 8 &&

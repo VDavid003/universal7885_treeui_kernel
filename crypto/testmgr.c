@@ -3215,6 +3215,21 @@ static const struct alg_test_desc alg_test_descs[] = {
 			}
 		}
 	}, {
+		.alg = "heh(aes)",
+		.test = alg_test_skcipher,
+		.suite = {
+			.cipher = {
+				.enc = {
+					.vecs = aes_heh_enc_tv_template,
+					.count = AES_HEH_ENC_TEST_VECTORS
+				},
+				.dec = {
+					.vecs = aes_heh_dec_tv_template,
+					.count = AES_HEH_DEC_TEST_VECTORS
+				}
+			}
+		}
+	}, {
 		.alg = "hmac(crc32)",
 		.test = alg_test_hash,
 		.suite = {
@@ -3871,6 +3886,22 @@ static const struct alg_test_desc alg_test_descs[] = {
 				.decomp = {
 					.vecs = zlib_decomp_tv_template,
 					.count = ZLIB_DECOMP_TEST_VECTORS
+				}
+			}
+		}
+	}, {
+		.alg = "zstd",
+		.test = alg_test_comp,
+		.fips_allowed = 1,
+		.suite = {
+			.comp = {
+				.comp = {
+					.vecs = zstd_comp_tv_template,
+					.count = ZSTD_COMP_TEST_VECTORS
+				},
+				.decomp = {
+					.vecs = zstd_decomp_tv_template,
+					.count = ZSTD_DECOMP_TEST_VECTORS
 				}
 			}
 		}

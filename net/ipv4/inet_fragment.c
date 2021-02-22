@@ -171,7 +171,6 @@ static struct inet_frag_queue *inet_frag_alloc(struct netns_frags *nf,
 
 	if (!nf->high_thresh || frag_mem_limit(nf) > nf->high_thresh)
 		return NULL;
-
 	q = kmem_cache_zalloc(f->frags_cachep, GFP_ATOMIC);
 	if (!q)
 		return NULL;

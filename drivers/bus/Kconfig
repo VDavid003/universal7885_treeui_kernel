@@ -47,6 +47,16 @@ config ARM_CCI500_PMU
 
 	  If unsure, say Y
 
+config ARM_CCI550_DEBUG_MODE
+	bool "ARM CCI550 DEBUG mode support"
+	depends on (ARM && CPU_V8) || ARM64
+	select ARM_CCI
+	help
+	  Support for debug messages on the ARM CCI-550 cache coherent
+	  interconnect. CCI-550 provides imprecise Error Register. This register
+	  records the CCI-550 interface that have encountered an error that
+	  cannot be signaled precisely.
+
 config ARM_CCN
 	bool "ARM CCN driver support"
 	depends on ARM || ARM64

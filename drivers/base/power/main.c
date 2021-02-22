@@ -33,11 +33,21 @@
 #include <linux/cpufreq.h>
 #include <linux/cpuidle.h>
 #include <linux/timer.h>
+#include <linux/wakeup_reason.h>
 
 #include "../base.h"
 #include "power.h"
 
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/sec_debug.h>
+#endif
+
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+#include <linux/sec_suspend_resume.h>
+int debug_enable;
+#else
 typedef int (*pm_callback_t)(struct device *);
+#endif
 
 /*
  * The entries in the dpm_list list are in a depth first order, simply
@@ -95,6 +105,7 @@ void device_pm_sleep_init(struct device *dev)
 	dev->power.is_suspended = false;
 	dev->power.is_noirq_suspended = false;
 	dev->power.is_late_suspended = false;
+	dev->power.is_rpm_disabled = false;
 	init_completion(&dev->power.completion);
 	complete_all(&dev->power.completion);
 	dev->power.wakeup = NULL;
@@ -125,6 +136,7 @@ void device_pm_add(struct device *dev)
 {
 	pr_debug("PM: Adding info for %s:%s\n",
 		 dev->bus ? dev->bus->name : "No Bus", dev_name(dev));
+	device_pm_check_callbacks(dev);
 	mutex_lock(&dpm_list_mtx);
 	if (dev->parent && dev->parent->power.is_prepared)
 		dev_warn(dev, "parent %s should not be sleeping\n",
@@ -147,6 +159,7 @@ void device_pm_remove(struct device *dev)
 	mutex_unlock(&dpm_list_mtx);
 	device_wakeup_disable(dev);
 	pm_runtime_remove(dev);
+	device_pm_check_callbacks(dev);
 }
 
 /**
@@ -373,24 +386,52 @@ static void dpm_show_time(ktime_t starttime, pm_message_t state, char *info)
 		usecs / USEC_PER_MSEC, usecs % USEC_PER_MSEC);
 }
 
+#if defined(CONFIG_SEC_NAD_BALANCER) && defined(CONFIG_SEC_FACTORY)
+extern void report_sleep_info(struct device *dev, pm_message_t state,
+		       unsigned long long usec);
+
+static void sec_nad_debug_report(struct device *dev, ktime_t calltime,
+				  pm_message_t state)
+{
+	ktime_t rettime;
+	s64 nsecs;
+
+	rettime = ktime_get();
+	nsecs = (s64) ktime_to_ns(ktime_sub(rettime, calltime));
+
+	report_sleep_info(dev, state,(unsigned long long)nsecs >> 10);
+}
+#endif
+
 static int dpm_run_callback(pm_callback_t cb, struct device *dev,
 			    pm_message_t state, char *info)
 {
 	ktime_t calltime;
+#if defined(CONFIG_SEC_NAD_BALANCER) && defined(CONFIG_SEC_FACTORY)
+	ktime_t nad_calltime;
+#endif
 	int error;
 
 	if (!cb)
 		return 0;
 
 	calltime = initcall_debug_start(dev);
+#if defined(CONFIG_SEC_NAD_BALANCER) && defined(CONFIG_SEC_FACTORY)
+	nad_calltime = ktime_get();
+#endif
 
 	pm_dev_dbg(dev, state, info);
 	trace_device_pm_callback_start(dev, info, state.event);
+	exynos_ss_suspend(cb, dev, ESS_FLAG_IN);
 	error = cb(dev);
+	exynos_ss_suspend(cb, dev, ESS_FLAG_OUT);
 	trace_device_pm_callback_end(dev, error);
 	suspend_report_result(cb, error);
 
 	initcall_debug_report(dev, calltime, error, state, info);
+#if defined(CONFIG_SEC_NAD_BALANCER) && defined(CONFIG_SEC_FACTORY)
+	sec_nad_debug_report(dev, nad_calltime, state);
+#endif
 
 	return error;
 }
@@ -418,6 +459,9 @@ static void dpm_watchdog_handler(unsigned long data)
 	struct dpm_watchdog *wd = (void *)data;
 
 	dev_emerg(wd->dev, "**** DPM device timeout ****\n");
+#ifdef CONFIG_SEC_DEBUG_EXTRA_INFO
+	sec_debug_set_extra_info_dpm_timeout(dev_name(wd->dev));
+#endif
 	show_stack(wd->tsk, NULL);
 	panic("%s %s: unrecoverable failure\n",
 		dev_driver_string(wd->dev), dev_name(wd->dev));
@@ -476,6 +520,10 @@ static int device_resume_noirq(struct device *dev, pm_message_t state, bool asyn
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+#endif
 
 	TRACE_DEVICE(dev);
 	TRACE_RESUME(0);
@@ -507,7 +555,21 @@ static int device_resume_noirq(struct device *dev, pm_message_t state, bool asyn
 		callback = pm_noirq_op(dev->driver->pm, state);
 	}
 
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG	
+	if (debug_enable){
+		calltime = ktime_get();
+		error = dpm_run_callback(callback, dev, state, info);
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+		if(callback)
+			sec_debug_add(callback, duration, 1);
+	} else
+		error = dpm_run_callback(callback, dev, state, info);
+#else
 	error = dpm_run_callback(callback, dev, state, info);
+	
+#endif
 	dev->power.is_noirq_suspended = false;
 
  Out:
@@ -606,6 +668,10 @@ static int device_resume_early(struct device *dev, pm_message_t state, bool asyn
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+#endif
 
 	TRACE_DEVICE(dev);
 	TRACE_RESUME(0);
@@ -637,7 +703,20 @@ static int device_resume_early(struct device *dev, pm_message_t state, bool asyn
 		callback = pm_late_early_op(dev->driver->pm, state);
 	}
 
-	error = dpm_run_callback(callback, dev, state, info);
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	if (debug_enable){
+		calltime = ktime_get();
+		error = dpm_run_callback(callback, dev, state, info);
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+		if(callback)
+			sec_debug_add(callback, duration, 1);
+	} else 
+		error = dpm_run_callback(callback, dev, state, info);
+#else
+		error = dpm_run_callback(callback, dev, state, info);
+#endif
 	dev->power.is_late_suspended = false;
 
  Out:
@@ -734,6 +813,11 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+#endif
+
 	DECLARE_DPM_WATCHDOG_ON_STACK(wd);
 
 	TRACE_DEVICE(dev);
@@ -744,7 +828,10 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 
 	if (dev->power.direct_complete) {
 		/* Match the pm_runtime_disable() in __device_suspend(). */
-		pm_runtime_enable(dev);
+		if (dev->power.is_rpm_disabled) {
+			pm_runtime_enable(dev);
+			dev->power.is_rpm_disabled = false;
+		}
 		goto Complete;
 	}
 
@@ -803,7 +890,21 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 	}
 
  End:
+
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	if (debug_enable){
+		calltime = ktime_get();
+		error = dpm_run_callback(callback, dev, state, info);
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+		if(callback)
+			sec_debug_add(callback, duration, 1);
+	} else
+		error = dpm_run_callback(callback, dev, state, info);
+#else
 	error = dpm_run_callback(callback, dev, state, info);
+#endif
 	dev->power.is_suspended = false;
 
  Unlock:
@@ -884,6 +985,9 @@ void dpm_resume(pm_message_t state)
 
 	cpufreq_resume();
 	trace_suspend_resume(TPS("dpm_resume"), state.event, false);
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	sec_sorted_list(1);
+#endif
 }
 
 /**
@@ -1018,6 +1122,10 @@ static int __device_suspend_noirq(struct device *dev, pm_message_t state, bool a
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+#endif
 
 	TRACE_DEVICE(dev);
 	TRACE_SUSPEND(0);
@@ -1054,7 +1162,20 @@ static int __device_suspend_noirq(struct device *dev, pm_message_t state, bool a
 		callback = pm_noirq_op(dev->driver->pm, state);
 	}
 
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	if (debug_enable){
+		calltime = ktime_get();
+		error = dpm_run_callback(callback, dev, state, info);
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+		if (callback)
+			sec_debug_add(callback, duration, 0);
+	} else 
+		error = dpm_run_callback(callback, dev, state, info);
+#else
 	error = dpm_run_callback(callback, dev, state, info);
+#endif
 	if (!error)
 		dev->power.is_noirq_suspended = true;
 	else
@@ -1147,6 +1268,11 @@ int dpm_suspend_noirq(pm_message_t state)
 		dpm_show_time(starttime, state, "noirq");
 	}
 	trace_suspend_resume(TPS("dpm_suspend_noirq"), state.event, false);
+	
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	sec_sorted_list(0);
+#endif
+
 	return error;
 }
 
@@ -1163,6 +1289,10 @@ static int __device_suspend_late(struct device *dev, pm_message_t state, bool as
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+#endif
 
 	TRACE_DEVICE(dev);
 	TRACE_SUSPEND(0);
@@ -1201,7 +1331,21 @@ static int __device_suspend_late(struct device *dev, pm_message_t state, bool as
 		callback = pm_late_early_op(dev->driver->pm, state);
 	}
 
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	if (debug_enable){
+		calltime = ktime_get();
+		error = dpm_run_callback(callback, dev, state, info);
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+		if (callback)
+			sec_debug_add(callback, duration, 0);
+	
+	} else 
+		error = dpm_run_callback(callback, dev, state, info);
+#else
 	error = dpm_run_callback(callback, dev, state, info);
+#endif
 	if (!error)
 		dev->power.is_late_suspended = true;
 	else
@@ -1348,6 +1492,12 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+	char suspend_abort[MAX_SUSPEND_ABORT_LEN];
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+#endif
+
 	DECLARE_DPM_WATCHDOG_ON_STACK(wd);
 
 	TRACE_DEVICE(dev);
@@ -1370,6 +1520,9 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		pm_wakeup_event(dev, 0);
 
 	if (pm_wakeup_pending()) {
+		pm_get_active_wakeup_sources(suspend_abort,
+			MAX_SUSPEND_ABORT_LEN);
+		log_suspend_abort_reason(suspend_abort);
 		dev->power.direct_complete = false;
 		async_error = -EBUSY;
 		goto Complete;
@@ -1381,10 +1534,12 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	if (dev->power.direct_complete) {
 		if (pm_runtime_status_suspended(dev)) {
 			pm_runtime_disable(dev);
+			dev->power.is_rpm_disabled = true;
 			if (pm_runtime_status_suspended(dev))
 				goto Complete;
 
 			pm_runtime_enable(dev);
+			dev->power.is_rpm_disabled = false;
 		}
 		dev->power.direct_complete = false;
 	}
@@ -1435,7 +1590,20 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		callback = pm_op(dev->driver->pm, state);
 	}
 
+#ifdef CONFIG_SEC_RESUME_SUSPEND_DEBUG
+	if (debug_enable){
+		calltime = ktime_get();
+		error = dpm_run_callback(callback, dev, state, info);
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+		if(callback)
+			sec_debug_add(callback, duration, 0);	
+	} else
+		error = dpm_run_callback(callback, dev, state, info);
+#else
 	error = dpm_run_callback(callback, dev, state, info);
+#endif
 
  End:
 	if (!error) {
@@ -1573,6 +1741,11 @@ static int device_prepare(struct device *dev, pm_message_t state)
 
 	dev->power.wakeup_path = device_may_wakeup(dev);
 
+	if (dev->power.no_pm_callbacks) {
+		ret = 1;	/* Let device go direct_complete */
+		goto unlock;
+	}
+
 	if (dev->pm_domain) {
 		info = "preparing power domain ";
 		callback = dev->pm_domain->ops.prepare;
@@ -1595,6 +1768,7 @@ static int device_prepare(struct device *dev, pm_message_t state)
 	if (callback)
 		ret = callback(dev);
 
+unlock:
 	device_unlock(dev);
 
 	if (ret < 0) {
@@ -1723,3 +1897,30 @@ void dpm_for_each_dev(void *data, void (*fn)(struct device *, void *))
 	device_pm_unlock();
 }
 EXPORT_SYMBOL_GPL(dpm_for_each_dev);
+
+static bool pm_ops_is_empty(const struct dev_pm_ops *ops)
+{
+	if (!ops)
+		return true;
+
+	return !ops->prepare &&
+	       !ops->suspend &&
+	       !ops->suspend_late &&
+	       !ops->suspend_noirq &&
+	       !ops->resume_noirq &&
+	       !ops->resume_early &&
+	       !ops->resume &&
+	       !ops->complete;
+}
+
+void device_pm_check_callbacks(struct device *dev)
+{
+	spin_lock_irq(&dev->power.lock);
+	dev->power.no_pm_callbacks =
+		(!dev->bus || pm_ops_is_empty(dev->bus->pm)) &&
+		(!dev->class || pm_ops_is_empty(dev->class->pm)) &&
+		(!dev->type || pm_ops_is_empty(dev->type->pm)) &&
+		(!dev->pm_domain || pm_ops_is_empty(&dev->pm_domain->ops)) &&
+		(!dev->driver || pm_ops_is_empty(dev->driver->pm));
+	spin_unlock_irq(&dev->power.lock);
+}

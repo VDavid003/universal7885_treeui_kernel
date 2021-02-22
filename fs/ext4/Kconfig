@@ -77,6 +77,7 @@ config EXT4_FS_POSIX_ACL
 	bool "Ext4 POSIX Access Control Lists"
 	depends on EXT4_FS
 	select FS_POSIX_ACL
+	default y if ANDROID_VERSION >= "90000"
 	help
 	  POSIX Access Control Lists (ACLs) support permissions for users and
 	  groups beyond the owner/group/world scheme.
@@ -106,6 +107,7 @@ config EXT4_ENCRYPTION
 	select CRYPTO_ECB
 	select CRYPTO_XTS
 	select CRYPTO_CTS
+	select CRYPTO_HEH
 	select CRYPTO_CTR
 	select CRYPTO_SHA256
 	select KEYS
@@ -121,6 +123,13 @@ config EXT4_FS_ENCRYPTION
 	default y
 	depends on EXT4_ENCRYPTION
 
+
+config EXT4_PRIVATE_ENCRYPTION
+	tristate "Ext4 Private Encryption"
+	depends on EXT4_FS_ENCRYPTION && EXYNOS_FMP
+	help
+	  Enable private encryption of ext4 files and difectories.
+
 config EXT4_DEBUG
 	bool "EXT4 debugging support"
 	depends on EXT4_FS
@@ -130,3 +139,12 @@ config EXT4_DEBUG
 	  If you select Y here, then you will be able to turn on debugging
 	  with a command such as:
 		echo 1 > /sys/module/ext4/parameters/mballoc_debug
+
+config EXT4CRYPT_SDP
+	bool "Sensitive Data Protection for Per-file-encryption"
+	depends on EXT4_ENCRYPTION
+	depends on SDP
+	help
+	  Enable SDP functional to fscrypto module.
+	  This feature is supporting "Data-At-Rest" for file systems using
+	  Per-file-encryption being controlled by SDP user status.

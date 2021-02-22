@@ -12,23 +12,6 @@ config ARCH_BERLIN
 	help
 	  This enables support for Marvell Berlin SoC Family
 
-config ARCH_EXYNOS
-	bool
-	help
-	  This enables support for Samsung Exynos SoC family
-
-config ARCH_EXYNOS7
-	bool "ARMv8 based Samsung Exynos7"
-	select ARCH_EXYNOS
-	select COMMON_CLK_SAMSUNG
-	select HAVE_S3C2410_WATCHDOG if WATCHDOG
-	select HAVE_S3C_RTC if RTC_CLASS
-	select PINCTRL
-	select PINCTRL_EXYNOS
-
-	help
-	  This enables support for Samsung Exynos7 SoC family
-
 config ARCH_LAYERSCAPE
 	bool "ARMv8 based Freescale Layerscape SoC family"
 	help
@@ -125,5 +108,153 @@ config ARCH_ZYNQMP
 	bool "Xilinx ZynqMP Family"
 	help
 	  This enables support for Xilinx ZynqMP Family
+
+menu "Samsung Exynos"
+config ARCH_EXYNOS
+	bool
+
+config SOC_EXYNOS7872
+	bool "Samsung EXYNOS7872"
+	select ARCH_EXYNOS
+	select ARCH_HAS_CPUFREQ
+	select HAVE_S3C2410_I2C if I2C
+	select HAVE_S3C2410_WATCHDOG if WATCHDOG
+	select HAVE_S3C_RTC if RTC_CLASS
+	select ARCH_SUPPORTS_MSI
+	select ARM_AMBA
+	select CLKSRC_OF
+	select USE_OF
+	select COMMON_CLK_SAMSUNG
+	select CLKSRC_EXYNOS_MCT
+	select PINCTRL
+	select SAMSUNG_DMADEV
+
+config SOC_EMULATOR7872
+	bool "Samsung EMULATOR7872"
+
+config SOC_EXYNOS7885
+	bool "Samsung EXYNOS7885"
+	select ARCH_EXYNOS
+	select ARCH_HAS_CPUFREQ
+	select HAVE_S3C2410_I2C if I2C
+	select HAVE_S3C2410_WATCHDOG if WATCHDOG
+	select HAVE_S3C_RTC if RTC_CLASS
+	select ARCH_SUPPORTS_MSI
+	select ARM_AMBA
+	select SAMSUNG_DMADEV
+	select CLKSRC_OF
+	select USE_OF
+	select COMMON_CLK_SAMSUNG
+	select CLKSRC_EXYNOS_MCT
+	select PINCTRL
+
+config SOC_EXYNOS7885_ANDROID_VERSION_O
+	bool "Samsung EXYNOS785 Android version O"
+	help
+	  This enables support for Android version O of EXYNOS7885
+
+config SOC_EXYNOS7885_ANDROID_VERSION_P
+	bool "Samsung EXYNOS7885 Android version P"
+	help
+	  This enables support for Android version P of EXYNOS7885
+
+config SOC_EXYNOS7885_ANDROID_VERSION_Q
+	bool "Samsung EXYNOS7885 Android version Q"
+	help
+	  This enables support for Android version Q of EXYNOS7885
+
+config SOC_EXYNOS7885_ANDROID_VERSION_Q_MR
+	bool "Samsung EXYNOS7885 Android version Q maintenance release"
+	help
+	  This enables support for Android version Q_MR of EXYNOS7885
+
+config SOC_EXYNOS7885_ANDROID_VERSION_P_MR
+	bool "Samsung EXYNOS7885 Android version P maintenance release"
+	default n
+	depends on SOC_EXYNOS7885_ANDROID_VERSION_P
+	help
+	  This enables support for Android version P_MR of EXYNOS7885
+
+config SOC_EXYNOS7884
+	bool "Samsung EXYNOS7884"
+	help
+	  This enables support for Lushan (A73/A53)
+
+config SOC_EXYNOS7883
+	bool "Samsung EXYNOS7883"
+	help
+	  This enables support for Lushan Q (A53)
+
+config SOC_EXYNOS7884A
+	bool "Samsung EXYNOS7884A"
+	help
+	  This enables support for LushanA (A73/A53)
+
+config ARCH_EXYNOS7
+	bool "SAMSUNG EXYNOS7"
+	select HAVE_ARM_SCU if SMP
+	select HAVE_SMP
+	help
+	  Samsung EXYNOS7 (A57/A53) SoC based systems
+
+
+config SOC_EXYNOS8890
+	bool "Samsung EXYNOS8890"
+	select SOC_SAMSUNG
+	select ARCH_EXYNOS
+	select ARCH_HAS_CPUFREQ
+	select HAVE_S3C2410_I2C if I2C
+	select HAVE_S3C2410_WATCHDOG if WATCHDOG
+	select HAVE_S3C_RTC if RTC_CLASS
+	select ARCH_SUPPORTS_MSI
+	select ARM_AMBA
+	select CLKSRC_OF
+	select USE_OF
+	select COMMON_CLK_SAMSUNG
+	select CLKSRC_EXYNOS_MCT
+	select PINCTRL
+	select SAMSUNG_DMADEV
+
+config SOC_EXYNOS8895
+	bool "Samsung EXYNOS8895"
+	select SOC_SAMSUNG
+	select ARCH_EXYNOS
+	select ARCH_HAS_CPUFREQ
+	select HAVE_S3C2410_I2C if I2C
+	select HAVE_S3C2410_WATCHDOG if WATCHDOG
+	select HAVE_S3C_RTC if RTC_CLASS
+	select ARCH_SUPPORTS_MSI
+	select ARM_AMBA
+	select CLKSRC_OF
+	select USE_OF
+	select COMMON_CLK_SAMSUNG
+	select CLKSRC_EXYNOS_MCT
+	select PINCTRL
+	select SAMSUNG_DMADEV
+
+config SOC_EMULATOR8895
+	bool "Samsung EMULATOR8895"
+
+config ARCH_EXYNOS8
+	bool "ARMv8 based Samsung Exynos8"
+	select HAVE_ARM_SCU if SMP
+	select HAVE_SMP
+	help
+	  Samsung EXYNOS8 (Mongoose/A53) SoC based systems
+
+config ZONE_MOVABLE
+	bool "Enable Zone Movable"
+	default n
+
+config ZONE_MOVABLE_SIZE_MBYTES
+	int "ZONE_MOVABLE Size in MBytes"
+	range 0 1024
+	default 0
+	depends on ZONE_MOVABLE
+	help
+	  Set Movable Zone size based on bits shift value. Movable Zone size
+	  must be less than the highest populated zone.
+
+endmenu
 
 endmenu

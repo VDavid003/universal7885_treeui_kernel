@@ -25,6 +25,7 @@
 #include <linux/mount.h>
 #include <linux/personality.h>
 #include <linux/backing-dev.h>
+#include <linux/task_integrity.h>
 #include <net/flow.h>
 
 #define MAX_LSM_EVM_XATTR	2
@@ -105,11 +106,12 @@ int __init security_module_enable(const char *module)
  * call_int_hook:
  *	This is a hook that returns a value.
  */
-
+//CONFIG_RKP_KDP
 #define call_void_hook(FUNC, ...)				\
 	do {							\
 		struct security_hook_list *P;			\
 								\
+		if(security_integrity_current()) break;		\
 		list_for_each_entry(P, &security_hook_heads.FUNC, list)	\
 			P->hook.FUNC(__VA_ARGS__);		\
 	} while (0)
@@ -119,6 +121,9 @@ int __init security_module_enable(const char *module)
 	do {							\
 		struct security_hook_list *P;			\
 								\
+		RC = security_integrity_current();		\
+		if (RC != 0)					\
+			break;					\
 		list_for_each_entry(P, &security_hook_heads.FUNC, list) { \
 			RC = P->hook.FUNC(__VA_ARGS__);		\
 			if (RC != 0)				\
@@ -246,6 +251,9 @@ int security_bprm_check(struct linux_binprm *bprm)
 	int ret;
 
 	ret = call_int_hook(bprm_check_security, 0, bprm);
+	if (ret)
+		return ret;
+	ret = five_bprm_check(bprm);
 	if (ret)
 		return ret;
 	return ima_bprm_check(bprm);
@@ -498,6 +506,7 @@ int security_path_chown(struct path *path, kuid_t uid, kgid_t gid)
 		return 0;
 	return call_int_hook(path_chown, 0, path, uid, gid);
 }
+EXPORT_SYMBOL(security_path_chown);
 
 int security_path_chroot(struct path *path)
 {
@@ -637,6 +646,9 @@ int security_inode_setxattr(struct dentry *dentry, const char *name,
 		ret = cap_inode_setxattr(dentry, name, value, size, flags);
 	if (ret)
 		return ret;
+	ret = five_inode_setxattr(dentry, name, value, size);
+	if (ret)
+		return ret;
 	ret = ima_inode_setxattr(dentry, name, value, size);
 	if (ret)
 		return ret;
@@ -679,6 +691,9 @@ int security_inode_removexattr(struct dentry *dentry, const char *name)
 	ret = call_int_hook(inode_removexattr, 1, dentry, name);
 	if (ret == 1)
 		ret = cap_inode_removexattr(dentry, name);
+	if (ret)
+		return ret;
+	ret = five_inode_removexattr(dentry, name);
 	if (ret)
 		return ret;
 	ret = ima_inode_removexattr(dentry, name);
@@ -793,6 +808,9 @@ int security_mmap_file(struct file *file, unsigned long prot,
 					mmap_prot(file, prot), flags);
 	if (ret)
 		return ret;
+	ret = five_file_mmap(file, prot);
+	if (ret)
+		return ret;
 	return ima_file_mmap(file, prot);
 }
 
@@ -841,7 +859,11 @@ int security_file_open(struct file *file, const struct cred *cred)
 	if (ret)
 		return ret;
 
-	return fsnotify_perm(file, MAY_OPEN);
+	ret = fsnotify_perm(file, MAY_OPEN);
+	if (ret)
+		return ret;
+
+	return five_file_open(file);
 }
 
 int security_task_create(unsigned long clone_flags)
@@ -852,6 +874,7 @@ int security_task_create(unsigned long clone_flags)
 void security_task_free(struct task_struct *task)
 {
 	call_void_hook(task_free, task);
+	five_task_free(task);
 }
 
 int security_cred_alloc_blank(struct cred *cred, gfp_t gfp)

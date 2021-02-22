@@ -56,3 +56,27 @@ obj-$(CONFIG_GENWQE)		+= genwqe/
 obj-$(CONFIG_ECHO)		+= echo/
 obj-$(CONFIG_VEXPRESS_SYSCFG)	+= vexpress-syscfg.o
 obj-$(CONFIG_CXL_BASE)		+= cxl/
+obj-$(CONFIG_UID_SYS_STATS) += uid_sys_stats.o
+obj-$(CONFIG_MCU_IPC)		+= mcu_ipc/
+obj-$(CONFIG_USIM_DETECT)	+= usim_det/
+obj-$(CONFIG_SEC_MODEM_IF)  += modem_if/
+obj-$(CONFIG_GNSS_SHMEM_IF)    += gnss_if/
+obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= modem_v1/
+obj-$(CONFIG_EXYNOS_IMA)	+= exynos_ima.o
+obj-y				+= samsung/
+# TIMA
+obj-$(CONFIG_TIMA)		+= tima_debug_test.o
+obj-$(CONFIG_TIMA_LOG)		+= tima_debug_log.o
+# DM-Verity
+obj-$(CONFIG_DM_VERITY)		+= dmverity_query.o
+# TEEGRIS kernel driver
+ifneq ($(CONFIG_TEEGRIS_VERSION),2)
+ccflags-$(CONFIG_TZDEV) += -I$(srctree)/drivers/misc/tzdev/$(CONFIG_TEEGRIS_VERSION).0/include
+obj-$(CONFIG_TZDEV)	+= tzdev/$(CONFIG_TEEGRIS_VERSION).0/
+else
+ccflags-$(CONFIG_TZDEV) += -I$(srctree)/drivers/misc/tzdev/include
+obj-$(CONFIG_TZDEV)	+= tzdev/
+endif
+obj-$(CONFIG_SAMSUNG_TUI)	+= tui/
+# TZIC
+obj-y				+= tzic64.o

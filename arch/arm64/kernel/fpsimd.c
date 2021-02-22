@@ -89,6 +89,12 @@
  */
 static DEFINE_PER_CPU(struct fpsimd_state *, fpsimd_last_state);
 
+#ifdef CONFIG_FPSIMD_CORRUPTION_DETECT
+void fpsimd_context_check(struct task_struct *next);
+#else
+#define fpsimd_context_check(a)   do { } while (0)
+#endif
+
 /*
  * Trapped FP/ASIMD access.
  */
@@ -125,15 +131,49 @@ void do_fpsimd_exc(unsigned int esr, struct pt_regs *regs)
 	send_sig_info(SIGFPE, &info, current);
 }
 
+#ifdef CONFIG_FPSIMD_CORRUPTION_DETECT
+void fpsimd_context_check(struct task_struct *next)
+{
+	int simd_reg_index;
+	struct fpsimd_state current_st, *saved_st;
+	saved_st = &next->thread.fpsimd_state;
+	fpsimd_save_state(&current_st);
+	
+	for (simd_reg_index = 0; simd_reg_index < 32; simd_reg_index++)
+	{
+		if(current_st.vregs[simd_reg_index] != saved_st->vregs[simd_reg_index])
+			BUG();
+	}
+
+	if((current_st.fpsr != saved_st->fpsr) || (current_st.fpcr != saved_st->fpcr))
+		BUG();
+}
+#endif
+
 void fpsimd_thread_switch(struct task_struct *next)
 {
+	struct fpsimd_state *cur_st = &current->thread.fpsimd_state;
+	struct fpsimd_kernel_state *cur_kst
+			= &current->thread.fpsimd_kernel_state;
+	struct fpsimd_state *nxt_st = &next->thread.fpsimd_state;
+	struct fpsimd_kernel_state *nxt_kst
+			= &next->thread.fpsimd_kernel_state;
+
 	/*
 	 * Save the current FPSIMD state to memory, but only if whatever is in
 	 * the registers is in fact the most recent userland FPSIMD state of
 	 * 'current'.
 	 */
 	if (current->mm && !test_thread_flag(TIF_FOREIGN_FPSTATE))
-		fpsimd_save_state(&current->thread.fpsimd_state);
+		fpsimd_save_state(cur_st);
+
+	if (atomic_read(&cur_kst->depth))
+		fpsimd_save_state((struct fpsimd_state *)cur_kst);
+
+	if (atomic_read(&nxt_kst->depth)) {
+		fpsimd_load_state((struct fpsimd_state *)nxt_kst);
+		this_cpu_write(fpsimd_last_state, (struct fpsimd_state *)nxt_kst);
+	}
 
 	if (next->mm) {
 		/*
@@ -143,12 +183,12 @@ void fpsimd_thread_switch(struct task_struct *next)
 		 * the TIF_FOREIGN_FPSTATE flag so the state will be loaded
 		 * upon the next return to userland.
 		 */
-		struct fpsimd_state *st = &next->thread.fpsimd_state;
-
-		if (__this_cpu_read(fpsimd_last_state) == st
-		    && st->cpu == smp_processor_id())
+		if (__this_cpu_read(fpsimd_last_state) == nxt_st
+		    && nxt_st->cpu == smp_processor_id()) {
+			fpsimd_context_check(next);
 			clear_ti_thread_flag(task_thread_info(next),
 					     TIF_FOREIGN_FPSTATE);
+		}
 		else
 			set_ti_thread_flag(task_thread_info(next),
 					   TIF_FOREIGN_FPSTATE);
@@ -220,6 +260,42 @@ void fpsimd_flush_task_state(struct task_struct *t)
 	t->thread.fpsimd_state.cpu = NR_CPUS;
 }
 
+void fpsimd_set_task_using(struct task_struct *t)
+{
+	atomic_set(&t->thread.fpsimd_kernel_state.depth, 1);
+}
+
+void fpsimd_clr_task_using(struct task_struct *t)
+{
+	atomic_set(&t->thread.fpsimd_kernel_state.depth, 0);
+}
+
+void fpsimd_get(void)
+{
+	if (in_interrupt())
+		return;
+
+	if (atomic_inc_return(&current->thread.fpsimd_kernel_state.depth) == 1) {
+		preempt_disable();
+		if (current->mm &&
+		    !test_and_set_thread_flag(TIF_FOREIGN_FPSTATE)) {
+			fpsimd_save_state(&current->thread.fpsimd_state);
+			fpsimd_flush_task_state(current);
+		}
+		this_cpu_write(fpsimd_last_state, NULL);
+		preempt_enable();
+	}
+}
+
+void fpsimd_put(void)
+{
+	if (in_interrupt())
+		return;
+
+	BUG_ON(atomic_dec_return(
+		&current->thread.fpsimd_kernel_state.depth) < 0);
+}
+
 #ifdef CONFIG_KERNEL_MODE_NEON
 
 static DEFINE_PER_CPU(struct fpsimd_partial_state, hardirq_fpsimdstate);
@@ -272,13 +348,22 @@ static int fpsimd_cpu_pm_notifier(struct notifier_block *self,
 {
 	switch (cmd) {
 	case CPU_PM_ENTER:
-		if (current->mm && !test_thread_flag(TIF_FOREIGN_FPSTATE))
+		if ((current->mm && !test_thread_flag(TIF_FOREIGN_FPSTATE))
+		     || atomic_read(&current->thread.fpsimd_kernel_state.depth)) {
 			fpsimd_save_state(&current->thread.fpsimd_state);
+		}
 		this_cpu_write(fpsimd_last_state, NULL);
 		break;
 	case CPU_PM_EXIT:
 		if (current->mm)
 			set_thread_flag(TIF_FOREIGN_FPSTATE);
+
+		if (atomic_read(&current->thread.fpsimd_kernel_state.depth)) {
+			fpsimd_load_state(&current->thread.fpsimd_state);
+			this_cpu_write(fpsimd_last_state,
+					&current->thread.fpsimd_state);
+			current->thread.fpsimd_state.cpu = smp_processor_id();
+		}
 		break;
 	case CPU_PM_ENTER_FAILED:
 	default:
@@ -291,7 +376,7 @@ static struct notifier_block fpsimd_cpu_pm_notifier_block = {
 	.notifier_call = fpsimd_cpu_pm_notifier,
 };
 
-static void fpsimd_pm_init(void)
+static void __init fpsimd_pm_init(void)
 {
 	cpu_pm_register_notifier(&fpsimd_cpu_pm_notifier_block);
 }

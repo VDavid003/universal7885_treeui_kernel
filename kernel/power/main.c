@@ -38,12 +38,40 @@ int unregister_pm_notifier(struct notifier_block *nb)
 }
 EXPORT_SYMBOL_GPL(unregister_pm_notifier);
 
-int pm_notifier_call_chain(unsigned long val)
+int __pm_notifier_call_chain(unsigned long val, int nr_to_call, int *nr_calls)
 {
-	int ret = blocking_notifier_call_chain(&pm_chain_head, val, NULL);
+	int ret;
+
+	ret = __blocking_notifier_call_chain(&pm_chain_head, val, NULL,
+						nr_to_call, nr_calls);
 
 	return notifier_to_errno(ret);
 }
+int pm_notifier_call_chain(unsigned long val)
+{
+	return __pm_notifier_call_chain(val, -1, NULL);
+}
+
+#ifdef CONFIG_SEC_PM_DEBUG
+void *pm_notifier_call_chain_get_callback(int nr_calls)
+{
+	struct notifier_block *nb, *next_nb;
+	int nr_to_call = nr_calls;
+
+	nb = rcu_dereference_raw(pm_chain_head.head);
+
+	while (nb && nr_to_call) {
+		next_nb = rcu_dereference_raw(nb->next);
+		nb = next_nb;
+		nr_to_call--;
+	}
+
+	if (nb)
+		return (void *)nb->notifier_call;
+	else
+		return ERR_PTR(-ENODATA);
+}
+#endif /* CONFIG_SEC_PM_DEBUG */
 
 /* If set, devices may be suspended and resumed asynchronously. */
 int pm_async_enabled = 1;

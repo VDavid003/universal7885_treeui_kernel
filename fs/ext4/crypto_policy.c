@@ -16,6 +16,10 @@
 #include "ext4.h"
 #include "xattr.h"
 
+#ifdef CONFIG_EXT4CRYPT_SDP
+#include "sdp/fscrypto_sdp_dek_private.h"
+#endif
+
 static int ext4_inode_has_encryption_context(struct inode *inode)
 {
 	int res = ext4_xattr_get(inode, EXT4_XATTR_INDEX_ENCRYPTION,
@@ -38,8 +42,12 @@ static int ext4_is_encryption_context_consistent_with_policy(
 		return 0;
 	return (memcmp(ctx.master_key_descriptor, policy->master_key_descriptor,
 			EXT4_KEY_DESCRIPTOR_SIZE) == 0 &&
+#ifdef CONFIG_EXT4_PRIVATE_ENCRYPTION
+		((ctx.flags & EXT4_POLICY_FLAGS_PAD_MASK) == (policy->flags & EXT4_POLICY_FLAGS_PAD_MASK)) &&
+#else
 		(ctx.flags ==
 		 policy->flags) &&
+#endif
 		(ctx.contents_encryption_mode ==
 		 policy->contents_encryption_mode) &&
 		(ctx.filenames_encryption_mode ==
@@ -77,6 +85,9 @@ static int ext4_create_encryption_context_from_policy(
 	ctx.contents_encryption_mode = policy->contents_encryption_mode;
 	ctx.filenames_encryption_mode = policy->filenames_encryption_mode;
 	ctx.flags = policy->flags;
+#if defined(CONFIG_EXT4CRYPT_SDP) || defined(CONFIG_DDAR)
+	ctx.knox_flags = 0;
+#endif
 	BUILD_BUG_ON(sizeof(ctx.nonce) != EXT4_KEY_DERIVATION_NONCE_SIZE);
 	get_random_bytes(ctx.nonce, EXT4_KEY_DERIVATION_NONCE_SIZE);
 
@@ -139,7 +150,11 @@ int ext4_get_policy(struct inode *inode, struct ext4_encryption_policy *policy)
 	policy->version = 0;
 	policy->contents_encryption_mode = ctx.contents_encryption_mode;
 	policy->filenames_encryption_mode = ctx.filenames_encryption_mode;
+#ifdef CONFIG_EXT4_PRIVATE_ENCRYPTION
+	policy->flags = ctx.flags & EXT4_POLICY_FLAGS_PAD_MASK;
+#else
 	policy->flags = ctx.flags;
+#endif
 	memcpy(&policy->master_key_descriptor, ctx.master_key_descriptor,
 	       EXT4_KEY_DESCRIPTOR_SIZE);
 	return 0;
@@ -216,7 +231,11 @@ int ext4_is_child_context_consistent_with_parent(struct inode *parent,
 		 child_ctx.contents_encryption_mode) &&
 		(parent_ctx.filenames_encryption_mode ==
 		 child_ctx.filenames_encryption_mode) &&
+#ifdef CONFIG_EXT4_PRIVATE_ENCRYPTION
+		((parent_ctx.flags & EXT4_POLICY_FLAGS_PAD_MASK) == (child_ctx.flags & EXT4_POLICY_FLAGS_PAD_MASK));
+#else
 		(parent_ctx.flags == child_ctx.flags);
+#endif
 }
 
 /**
@@ -252,10 +271,31 @@ int ext4_inherit_context(struct inode *parent, struct inode *child)
 		ctx.contents_encryption_mode = ci->ci_data_mode;
 		ctx.filenames_encryption_mode = ci->ci_filename_mode;
 		ctx.flags = ci->ci_flags;
+#ifdef CONFIG_EXT4_PRIVATE_ENCRYPTION
+		if (!S_ISDIR(child->i_mode))
+			ctx.flags |= EXT4_POLICY_FLAGS_PRIVATE_ALGO;
+#endif
 		memcpy(ctx.master_key_descriptor, ci->ci_master_key,
 		       EXT4_KEY_DESCRIPTOR_SIZE);
 	}
 	get_random_bytes(ctx.nonce, EXT4_KEY_DERIVATION_NONCE_SIZE);
+#if defined(CONFIG_DDAR) || defined(CONFIG_EXT4CRYPT_SDP)
+	ctx.knox_flags = 0;
+#endif
+
+#ifdef CONFIG_EXT4CRYPT_SDP
+#ifdef CONFIG_SDP_ENHANCED
+	res = fscrypt_sdp_inherit_context(parent, child, &ctx);
+#else
+	res = fscrypt_sdp_test_and_inherit_context(parent, child, &ctx);
+#endif
+	if (res) {
+		printk_once(KERN_WARNING
+				"%s: Failed to set sensitive ongoing flag (err:%d)\n", __func__, res);
+		return res;
+	}
+#endif
+
 	res = ext4_xattr_set(child, EXT4_XATTR_INDEX_ENCRYPTION,
 			     EXT4_XATTR_NAME_ENCRYPTION_CONTEXT, &ctx,
 			     sizeof(ctx), 0);

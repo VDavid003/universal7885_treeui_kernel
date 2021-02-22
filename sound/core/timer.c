@@ -282,9 +282,10 @@ int snd_timer_open(struct snd_timer_instance **ti,
 		return -ENODEV;
 	}
 	if (!list_empty(&timer->open_list_head)) {
-		timeri = list_entry(timer->open_list_head.next,
+		struct snd_timer_instance *t =
+			list_entry(timer->open_list_head.next,
 				    struct snd_timer_instance, open_list);
-		if (timeri->flags & SNDRV_TIMER_IFLG_EXCLUSIVE) {
+		if (t->flags & SNDRV_TIMER_IFLG_EXCLUSIVE) {
 			mutex_unlock(&register_mutex);
 			return -EBUSY;
 		}
@@ -618,7 +619,7 @@ int snd_timer_continue(struct snd_timer_instance *timeri)
 	/* timer can continue only after pause */
 	if (!(timeri->flags & SNDRV_TIMER_IFLG_PAUSED))
 		return -EINVAL;
-
+	
 	if (timeri->flags & SNDRV_TIMER_IFLG_SLAVE)
 		return snd_timer_start_slave(timeri, false);
 	else
@@ -1848,9 +1849,6 @@ static int snd_timer_user_continue(struct file *file)
 	tu = file->private_data;
 	if (!tu->timeri)
 		return -EBADFD;
-	/* start timer instead of continue if it's not used before */
-	if (!(tu->timeri->flags & SNDRV_TIMER_IFLG_PAUSED))
-		return snd_timer_user_start(file);
 	tu->timeri->lost = 0;
 	return (err = snd_timer_continue(tu->timeri)) < 0 ? err : 0;
 }
