@@ -12,14 +12,20 @@
 /memreserve/ 0xE0000000 0xD00000;
 
 / {
-	reserved_memory: reserved-memory {
+	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <1>;
 		ranges;
 
 		fb_handover: framebuffer@0xEC000000 {
 			compatible = "exynos,dpu_fb_handover";
+			/* 1 full screen size = lcd_width * lcd_height * 4 */
 			reg = <0x0 0xEC000000 0x1400000>;
+		};
+
+		dram_test {
+			compatible = "exynos7885,dram_test";
+			reg = <0x0 0x80002000 0x2000>;
 		};
 
 		modem_if {
@@ -36,17 +42,17 @@
 			compatible = "exynos,gnss_if";
 			reg = <0x0 0xFFC00000 0x400000>;
 		};
-		
-		tima_mem: tima_region@0xB8000000 {
-			compatible = "removed-dma-pool";
-			reg = <0x0 0xB8000000 0x200000>;
-		};
-	
+
 		sec_debug_magic {
 			compatible = "exynos,sec_debug_magic";
 			reg = <0x0 0x80000000 0x1000>;
 		};
-		
+
+		tima_mem: tima_region@0xB8000000 {
+			compatible = "removed-dma-pool";
+			reg = <0x0 0xB8000000 0x200000>;
+		};
+
 		seclog_mem {
 			compatible = "exynos,seclog";
 			reg = <0x0 0xC0000000 0x80000>;
@@ -62,11 +68,12 @@
 			reg = <0x0 0xE9400000 0x400000>;
 		};
 
+
 		btabox_rmem {
 			compatible = "exynos,btabox_rmem";
 			size = <0x400000>;
 		};
-
+        
 		crypto {
 			compatible = "exynos8890-ion,crypto";
 			ion,reusable;
