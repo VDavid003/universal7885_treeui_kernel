@@ -418,7 +418,6 @@ void die(const char *str, struct pt_regs *regs, int err)
 
 	oops_enter();
 
-	raw_spin_lock_irq(&die_lock);
 	console_verbose();
 	bust_spinlocks(1);
 #ifdef CONFIG_SEC_DUMP_SUMMARY
@@ -431,7 +430,6 @@ void die(const char *str, struct pt_regs *regs, int err)
 
 	bust_spinlocks(0);
 	add_taint(TAINT_DIE, LOCKDEP_NOW_UNRELIABLE);
-	raw_spin_unlock_irq(&die_lock);
 	oops_exit();
 
 #ifdef CONFIG_SEC_DEBUG_EXTRA_INFO
