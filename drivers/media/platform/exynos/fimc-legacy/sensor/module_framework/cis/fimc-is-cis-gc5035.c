@@ -465,8 +465,6 @@ int sensor_gc5035_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	I2C_MUTEX_LOCK(cis->i2c_lock);
 	sensor_gc5035_cis_data_calculation(sensor_gc5035_pllinfos[mode], cis->cis_data);
 
-	msleep(50);
-
 	ret = sensor_cis_set_registers_addr8(subdev, sensor_gc5035_setfiles[mode], sensor_gc5035_setfile_sizes[mode]);
 	if (ret < 0) {
 		err("sensor_gc5035_set_registers fail!!");
@@ -665,7 +663,7 @@ p_err:
 int sensor_gc5035_cis_stream_on(struct v4l2_subdev *subdev)
 {
 	int ret = 0;
-	struct fimc_is_core *core = NULL;
+	int fsync_mode = 0;
 	struct fimc_is_cis *cis;
 	struct i2c_client *client;
 	cis_shared_data *cis_data;
@@ -689,13 +687,6 @@ int sensor_gc5035_cis_stream_on(struct v4l2_subdev *subdev)
 		goto p_err;
 	}
 
-	core = (struct fimc_is_core *)dev_get_drvdata(fimc_is_dev);
-	if (!core) {
-		err("The core device is null");
-		ret = -EINVAL;
-		goto p_err;
-	}
-
 	cis_data = cis->cis_data;
 
 	dbg_sensor(2, "[MOD:D:%d] %s\n", cis->id, __func__);
@@ -705,18 +696,24 @@ int sensor_gc5035_cis_stream_on(struct v4l2_subdev *subdev)
 	if (ret < 0)
 		err("[%s] sensor_gc5035_cis_group_param_hold_func fail\n", __func__);
 
-	/* Sensor Dual sync on/off */
-	if (test_bit(FIMC_IS_SENSOR_OPEN, &(core->sensor[0].state))) {
-		info("[%s] dual sync slave mode\n", __func__);
+	fsync_mode = fimc_is_vender_fsync_mode_on(cis_data);
+	
+	dbg_sensor(2, "[MOD:D:%d] %s fsync mode : %d\n", cis->id, __func__, fsync_mode);
+
+	/* Sensor fsync on/off */
+	switch (fsync_mode) {
+	case AA_CAMERATYPE_TELE:
+		info("[%s]slave mode\n", __func__);
 		ret = sensor_cis_set_registers_addr8(subdev, sensor_gc5035_fsync_slave, sensor_gc5035_fsync_slave_size);
 		if (ret < 0)
 			err("[%s] sensor_gc5035_fsync_slave fail\n", __func__);
-
-		/* The delay which can change the frame-length of first frame was removed here*/
-	}
-	else{
-		/* Delay for single mode */
-		msleep(50);
+		break;
+	default:
+		warn("%s fsync mode(%d) use normal mode\n", __func__,  fsync_mode);
+		ret = sensor_cis_set_registers_addr8(subdev, sensor_gc5035_fsync_master, sensor_gc5035_fsync_master_size);
+		if (ret < 0)
+			err("[%s] sensor_gc5035_fsync_master fail\n", __func__);
+		break;
 	}
 
 	/* Page Selection */
@@ -726,15 +723,8 @@ int sensor_gc5035_cis_stream_on(struct v4l2_subdev *subdev)
 
 	/* Sensor stream on */
 	ret = fimc_is_sensor_addr8_write8(client, 0x3E, 0x91);
-	if (ret < 0) {
+	if (unlikely(ret))
 		err("i2c treansfer fail addr(%x), val(%x), ret(%d)\n", 0x3e, 0x91, ret);
-		goto p_err;
-	}
-
-	if (!test_bit(FIMC_IS_SENSOR_OPEN, &(core->sensor[0].state))) {
-		/* Delay for single mode */
-		msleep(50);
-	}
 
 	cis_data->stream_on = true;
 
@@ -778,11 +768,11 @@ int sensor_gc5035_cis_stream_off(struct v4l2_subdev *subdev)
 
 	dbg_sensor(2, "[MOD:D:%d] %s\n", cis->id, __func__);
 
+	I2C_MUTEX_LOCK(cis->i2c_lock);
 	ret = sensor_gc5035_cis_group_param_hold_func(subdev, 0x00);
 	if (ret < 0)
 		err("[%s] sensor_gc5035_cis_group_param_hold_func fail\n", __func__);
 
-	I2C_MUTEX_LOCK(cis->i2c_lock);
 	/* Page Selection */
 	ret = fimc_is_sensor_addr8_write8(client, 0xfe, 0x00);
 	if (ret < 0)
@@ -790,10 +780,8 @@ int sensor_gc5035_cis_stream_off(struct v4l2_subdev *subdev)
 
 	/* Sensor stream off */
 	ret = fimc_is_sensor_addr8_write8(client, 0x3e, 0x00);
-	if (ret < 0) {
+	if (unlikely(ret))
 		err("i2c treansfer fail addr(%x), val(%x), ret(%d)\n", 0x3e, 0x00, ret);
-		goto p_err;
-	}
 
 	cis_data->stream_on = false;
 

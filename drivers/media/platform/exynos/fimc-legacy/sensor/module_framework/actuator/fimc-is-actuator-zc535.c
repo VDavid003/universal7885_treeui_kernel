@@ -200,7 +200,6 @@ static int sensor_zc535_init_position(struct i2c_client *client,
 	int i;
 	int ret = 0;
 	int init_step = 0;
-	int init_delay_us = 0;
 
 	init_step = sensor_zc535_valid_check(client);
 
@@ -210,10 +209,7 @@ static int sensor_zc535_init_position(struct i2c_client *client,
 			if (ret < 0)
 				goto p_err;
 
-			//mdelay(sysfs_actuator.init_delays[i]);
-			init_delay_us = sysfs_actuator.init_delays[i] * 1000;
-			usleep_range(init_delay_us, init_delay_us);
-			init_delay_us = 0;
+			mdelay(sysfs_actuator.init_delays[i]);
 		}
 
 		actuator->position = sysfs_actuator.init_positions[i];
@@ -225,15 +221,13 @@ static int sensor_zc535_init_position(struct i2c_client *client,
 		if (ret < 0)
 			goto p_err;
 
-		//mdelay(DEF_ZC535_FIRST_DELAY_MS);
-		usleep_range((DEF_ZC535_FIRST_DELAY_MS*1000), (DEF_ZC535_FIRST_DELAY_MS*1000));
+		mdelay(DEF_ZC535_FIRST_DELAY_MS);
 
 		ret = sensor_zc535_write_position(client, DEF_ZC535_SECOND_POSITION);
 		if (ret < 0)
 			goto p_err;
 
-		//mdelay(DEF_ZC535_SECOND_DELAY_MS);
-		usleep_range((DEF_ZC535_SECOND_DELAY_MS*1000), (DEF_ZC535_SECOND_DELAY_MS*1000));
+		mdelay(DEF_ZC535_SECOND_DELAY_MS);
 
 		actuator->position = DEF_ZC535_SECOND_POSITION;
 

@@ -4146,18 +4146,9 @@ static int fimc_is_ischain_3aa_stop(void *qdevice,
 	groupmgr = device->groupmgr;
 	group = &device->group_3aa;
 
-	if (!test_bit(FIMC_IS_GROUP_INIT, &group->state))
-		goto p_err;
-
-	if (!test_bit(FIMC_IS_ISCHAIN_INIT, &device->state))
-		goto p_err;
-
 	ret = fimc_is_group_stop(groupmgr, group);
 	if (ret) {
-		if (ret == -EPERM)
-			ret = 0;
-		else
-			merr("fimc_is_group_stop is fail(%d)", device, ret);
+		merr("fimc_is_group_stop is fail(%d)", device, ret);
 		goto p_err;
 	}
 
@@ -4440,18 +4431,9 @@ static int fimc_is_ischain_isp_stop(void *qdevice,
 	groupmgr = device->groupmgr;
 	group = &device->group_isp;
 
-	if (!test_bit(FIMC_IS_GROUP_INIT, &group->state))
-		goto p_err;
-
-	if (!test_bit(FIMC_IS_ISCHAIN_INIT, &device->state))
-		goto p_err;
-
 	ret = fimc_is_group_stop(groupmgr, group);
 	if (ret) {
-		if (ret == -EPERM)
-			ret = 0;
-		else
-			merr("fimc_is_group_stop is fail(%d)", device, ret);
+		merr("fimc_is_group_stop is fail(%d)", device, ret);
 		goto p_err;
 	}
 
@@ -4737,15 +4719,9 @@ static int fimc_is_ischain_dis_stop(void *qdevice,
 	groupmgr = device->groupmgr;
 	group = &device->group_dis;
 
-	if (!test_bit(FIMC_IS_GROUP_INIT, &group->state))
-		goto p_err;
-
 	ret = fimc_is_group_stop(groupmgr, group);
 	if (ret) {
-		if (ret == -EPERM)
-			ret = 0;
-		else
-			merr("fimc_is_group_stop is fail(%d)", device, ret);
+		merr("fimc_is_group_stop is fail(%d)", device, ret);
 		goto p_err;
 	}
 
@@ -5032,18 +5008,9 @@ static int fimc_is_ischain_mcs_stop(void *qdevice,
 	groupmgr = device->groupmgr;
 	group = &device->group_mcs;
 
-	if (!test_bit(FIMC_IS_GROUP_INIT, &group->state))
-		goto p_err;
-
-	if (!test_bit(FIMC_IS_ISCHAIN_INIT, &device->state))
-		goto p_err;
-
 	ret = fimc_is_group_stop(groupmgr, group);
 	if (ret) {
-		if (ret == -EPERM)
-			ret = 0;
-		else
-			merr("fimc_is_group_stop is fail(%d)", device, ret);
+		merr("fimc_is_group_stop is fail(%d)", device, ret);
 		goto p_err;
 	}
 
@@ -5322,18 +5289,9 @@ static int fimc_is_ischain_vra_stop(void *qdevice,
 	groupmgr = device->groupmgr;
 	group = &device->group_vra;
 
-	if (!test_bit(FIMC_IS_GROUP_INIT, &group->state))
-		goto p_err;
-
-	if (!test_bit(FIMC_IS_ISCHAIN_INIT, &device->state))
-		goto p_err;
-
 	ret = fimc_is_group_stop(groupmgr, group);
 	if (ret) {
-		if (ret == -EPERM)
-			ret = 0;
-		else
-			merr("fimc_is_group_stop is fail(%d)", device, ret);
+		merr("fimc_is_group_stop is fail(%d)", device, ret);
 		goto p_err;
 	}
 

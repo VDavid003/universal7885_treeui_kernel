@@ -1718,9 +1718,9 @@ void check_lib_memory_leak(void)
 #endif
 }
 
-bool fimc_is_lib_in_irq(void)
+bool fimc_is_lib_in_interrupt(void)
 {
-	if (in_irq())
+	if (in_interrupt())
 		return true;
 	else
 		return false;
@@ -1786,7 +1786,7 @@ void set_os_system_funcs(os_system_func_t *funcs)
 	funcs[45] = (os_system_func_t)fimc_is_free_heap;
 	funcs[46] = (os_system_func_t)get_reg_addr;
 
-	funcs[47] = (os_system_func_t)fimc_is_lib_in_irq;
+	funcs[47] = (os_system_func_t)fimc_is_lib_in_interrupt;
 	funcs[48] = (os_system_func_t)fimc_is_lib_flush_task_handler;
 
 	/* TODO: re-odering function table */
@@ -2118,7 +2118,6 @@ int fimc_is_load_ddk_bin(int loadType)
 	fimc_is_ischain_version(FIMC_IS_BIN_DDK_LIBRARY, bin.data, bin.size);
 	release_binary(&bin);
 
-	gPtr_lib_support.log_ptr = 0;
 	set_os_system_funcs(os_system_funcs);
 	/* call start_up function for DDK binary */
 #ifdef ENABLE_FPSIMD_FOR_USER
@@ -2317,7 +2316,7 @@ int fimc_is_load_bin(void)
 		fimc_is_load_ctrl_unlock();
 		return ret;
 	}
-
+	lib->log_ptr = 0;
 
 #ifdef USE_TZ_CONTROLLED_MEM_ATTRIBUTE
 	ret = fimc_is_load_rta_bin(BINARY_LOAD_DATA);

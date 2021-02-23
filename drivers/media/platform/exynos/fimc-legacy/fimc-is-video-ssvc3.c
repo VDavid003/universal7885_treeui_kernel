@@ -273,18 +273,7 @@ const struct v4l2_file_operations fimc_is_ssxvc3_video_fops = {
 static int fimc_is_ssxvc3_video_querycap(struct file *file, void *fh,
 	struct v4l2_capability *cap)
 {
-	struct fimc_is_video *video = video_drvdata(file);
-
-	BUG_ON(!cap);
-	BUG_ON(!video);
-
-	snprintf(cap->driver, sizeof(cap->driver), "%s", video->vd.name);
-	snprintf(cap->card, sizeof(cap->card), "%s", video->vd.name);
-	cap->capabilities |= V4L2_CAP_STREAMING
-			| V4L2_CAP_VIDEO_CAPTURE
-			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
-	cap->device_caps |= cap->capabilities;
-
+	/* Todo : add to query capability code */
 	return 0;
 }
 

@@ -460,21 +460,6 @@ void * fimc_is_gframe_rewind(struct fimc_is_groupmgr *groupmgr,
 	return gframe;
 }
 
-void *fimc_is_gframe_group_find(struct fimc_is_group *group, u32 target_fcount)
-{
-	struct fimc_is_group_frame *gframe;
-
-	BUG_ON(!group);
-	BUG_ON(group->instance >= FIMC_IS_STREAM_COUNT);
-
-	list_for_each_entry(gframe, &group->gframe_head, list) {
-		if (gframe->fcount == target_fcount)
-			return gframe;
-	}
-
-	return NULL;
-}
-
 int fimc_is_gframe_flush(struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_group *group)
 {
@@ -645,9 +630,6 @@ void fimc_is_group_subdev_cancel(struct fimc_is_group *group,
 #endif
 				}
 			} while (sub_frame && flush);
-
-			if (sub_vctx->video->try_smp)
-				up(&sub_vctx->video->smp_multi_input);
 		}
 
 		group = group->child;
@@ -917,8 +899,6 @@ static int fimc_is_group_task_start(struct fimc_is_groupmgr *groupmgr,
 
 	if (test_bit(FIMC_IS_GTASK_START, &gtask->state))
 		goto p_work;
-
-	sema_init(&gtask->smp_resource, 0);
 
 	init_kthread_worker(&gtask->worker);
 	snprintf(name, sizeof(name), "fimc_is_gw%d", gtask->id);
@@ -2112,24 +2092,21 @@ int fimc_is_group_stop(struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_framemgr *framemgr;
 	struct fimc_is_device_ischain *device;
 	struct fimc_is_device_sensor *sensor;
-	struct fimc_is_group *head;
 	struct fimc_is_group *child;
 	struct fimc_is_subdev *subdev;
 	struct fimc_is_group_task *gtask;
 
 	BUG_ON(!groupmgr);
 	BUG_ON(!group);
-	BUG_ON(!group->head);
 	BUG_ON(!group->device);
 	BUG_ON(!group->leader.vctx);
 	BUG_ON(group->instance >= FIMC_IS_STREAM_COUNT);
 	BUG_ON(group->id >= GROUP_ID_MAX);
 
 	device = group->device;
-	head = group->head;
-	gtask = &groupmgr->gtask[head->id];
 	sensor = device->sensor;
 	framemgr = GET_HEAD_GROUP_FRAMEMGR(group);
+	gtask = &groupmgr->gtask[group->id];
 	if (!framemgr) {
 		mgerr("framemgr is NULL", group, group);
 		goto p_err;
@@ -2148,31 +2125,31 @@ int fimc_is_group_stop(struct fimc_is_groupmgr *groupmgr,
 
 	retry = 150;
 	while (--retry && framemgr->queued_count[FS_REQUEST]) {
-		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &head->state) &&
-			!list_empty(&head->smp_trigger.wait_list)) {
+		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state) &&
+			!list_empty(&group->smp_trigger.wait_list)) {
 
 			if (!sensor) {
-				mwarn(" sensor is NULL, forcely trigger(pc %d)", device, head->pcount);
-				set_bit(FIMC_IS_GROUP_FORCE_STOP, &head->state);
-				up(&head->smp_trigger);
-			} else if (!test_bit(FIMC_IS_SENSOR_OPEN, &head->state)) {
-				mwarn(" sensor is closed, forcely trigger(pc %d)", device, head->pcount);
-				set_bit(FIMC_IS_GROUP_FORCE_STOP, &head->state);
-				up(&head->smp_trigger);
+				mwarn(" sensor is NULL, forcely trigger(pc %d)", device, group->pcount);
+				set_bit(FIMC_IS_GROUP_FORCE_STOP, &group->state);
+				up(&group->smp_trigger);
+			} else if (!test_bit(FIMC_IS_SENSOR_OPEN, &sensor->state)) {
+				mwarn(" sensor is closed, forcely trigger(pc %d)", device, group->pcount);
+				set_bit(FIMC_IS_GROUP_FORCE_STOP, &group->state);
+				up(&group->smp_trigger);
 			} else if (!test_bit(FIMC_IS_SENSOR_FRONT_START, &sensor->state)) {
-				mwarn(" front is stopped, forcely trigger(pc %d)", device, head->pcount);
-				set_bit(FIMC_IS_GROUP_FORCE_STOP, &head->state);
-				up(&head->smp_trigger);
+				mwarn(" front is stopped, forcely trigger(pc %d)", device, group->pcount);
+				set_bit(FIMC_IS_GROUP_FORCE_STOP, &group->state);
+				up(&group->smp_trigger);
 			} else if (!test_bit(FIMC_IS_SENSOR_BACK_START, &sensor->state)) {
-				mwarn(" back is stopped, forcely trigger(pc %d)", device, head->pcount);
-				set_bit(FIMC_IS_GROUP_FORCE_STOP, &head->state);
-				up(&head->smp_trigger);
+				mwarn(" back is stopped, forcely trigger(pc %d)", device, group->pcount);
+				set_bit(FIMC_IS_GROUP_FORCE_STOP, &group->state);
+				up(&group->smp_trigger);
 			} else if (retry < 100) {
-				merr(" sensor is working but no trigger(pc %d)", device, head->pcount);
-				set_bit(FIMC_IS_GROUP_FORCE_STOP, &head->state);
-				up(&head->smp_trigger);
+				merr(" sensor is working but no trigger(pc %d)", device, group->pcount);
+				set_bit(FIMC_IS_GROUP_FORCE_STOP, &group->state);
+				up(&group->smp_trigger);
 			} else {
-				mwarn(" wating for sensor trigger(pc %d)", device, head->pcount);
+				mwarn(" wating for sensor trigger(pc %d)", device, group->pcount);
 			}
 #ifdef ENABLE_SYNC_REPROCESSING
 		} else if (!test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state)) {
@@ -2186,14 +2163,14 @@ int fimc_is_group_stop(struct fimc_is_groupmgr *groupmgr,
 #endif
 		}
 
-		mgwarn(" %d reqs waiting...(pc %d) smp_resource(%d)", device, head,
-				framemgr->queued_count[FS_REQUEST], head->pcount,
+		mgwarn(" %d reqs waiting...(pc %d) smp_resource(%d)", device, group,
+				framemgr->queued_count[FS_REQUEST], group->pcount,
 				list_empty(&gtask->smp_resource.wait_list));
 		msleep(20);
 	}
 
 	if (!retry) {
-		mgerr(" waiting(until request empty) is fail(pc %d)", device, head, head->pcount);
+		mgerr(" waiting(until request empty) is fail(pc %d)", device, group, group->pcount);
 		errcnt++;
 	}
 
@@ -2232,22 +2209,22 @@ int fimc_is_group_stop(struct fimc_is_groupmgr *groupmgr,
 
 	retry = 150;
 	while (--retry && framemgr->queued_count[FS_PROCESS]) {
-		mgwarn(" %d pros waiting...(pc %d)", device, head, framemgr->queued_count[FS_PROCESS], head->pcount);
+		mgwarn(" %d pros waiting...(pc %d)", device, group, framemgr->queued_count[FS_PROCESS], group->pcount);
 		msleep(20);
 	}
 
 	if (!retry) {
-		mgerr(" waiting(until process empty) is fail(pc %d)", device, head, head->pcount);
+		mgerr(" waiting(until process empty) is fail(pc %d)", device, group, group->pcount);
 		errcnt++;
 	}
 
-	rcount = atomic_read(&head->rcount);
+	rcount = atomic_read(&group->rcount);
 	if (rcount) {
-		mgerr(" request is NOT empty(%d) (pc %d)", device, head, rcount, head->pcount);
+		mgerr(" request is NOT empty(%d) (pc %d)", device, group, rcount, group->pcount);
 		errcnt++;
 	}
 	/* the count of request should be clear for next streaming */
-	atomic_set(&head->rcount, 0);
+	atomic_set(&group->rcount, 0);
 
 	child = group;
 	while(child) {
@@ -2293,7 +2270,7 @@ int fimc_is_group_stop(struct fimc_is_groupmgr *groupmgr,
 		child = child->child;
 	}
 
-	fimc_is_gframe_flush(groupmgr, head);
+	fimc_is_gframe_flush(groupmgr, group);
 
 	if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state))
 		mginfo(" sensor fcount: %d, fcount: %d\n", device, group,
@@ -2850,12 +2827,8 @@ int fimc_is_group_shot(struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_group *gprev, *gnext;
 	struct fimc_is_group_frame *gframe;
 	struct fimc_is_group_task *gtask;
-	struct fimc_is_group *child;
-	struct fimc_is_group_task *gtask_child;
 	bool try_sdown = false;
 	bool try_rdown = false;
-	bool try_gdown[GROUP_ID_MAX] = {false};
-	u32 gtask_child_id = 0;
 
 	BUG_ON(!groupmgr);
 	BUG_ON(!group);
@@ -2893,25 +2866,6 @@ int fimc_is_group_shot(struct fimc_is_groupmgr *groupmgr,
 		goto p_err_ignore;
 	}
 	try_rdown = true;
-
-	child = group->child;
-	while (child) {
-		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state))
-			break;
-
-		gtask_child = &groupmgr->gtask[child->id];
-		gtask_child_id = child->id;
-		child = child->child;
-		if (!test_bit(FIMC_IS_GTASK_START, &gtask_child->state))
-			continue;
-
-		ret = down_interruptible(&gtask_child->smp_resource);
-		if (ret) {
-			mgerr(" down fail(%d) #2", group, group, ret);
-			goto p_err_ignore;
-		}
-		try_gdown[gtask_child_id] = true;
-	}
 
 	if (device->sensor && !test_bit(FIMC_IS_SENSOR_FRONT_START, &device->sensor->state)) {
 		/*
@@ -3072,12 +3026,10 @@ p_skip_sync:
 			 * HACK: Happen to CSIS_ERR_DMA_ERR_DMAFIFO_FULL when remosaic capture
 			 * 4MB -> 16MB captreu setting to MIF MAX level when 16MB scenario
 			 */
-			if ((frame->shot_ext->setfile == ISS_SUB_SCENARIO_FRONT_REMOSAIC_CAPTURE_WDR_AUTO)
-				|| (frame->shot_ext->setfile == ISS_SUB_SCENARIO_FRONT_REMOSAIC_CAPTURE)
-				|| (frame->shot_ext->setfile == ISS_SUB_SCENARIO_FRONT_REMOSAIC_CAPTURE_WDR_ON)) {
+			if (frame->shot_ext->setfile == ISS_SUB_SCENARIO_FRONT_REMOSAIC_CAPTURE_WDR_AUTO) {
 				mif_qos = fimc_is_get_qos(core, FIMC_IS_DVFS_MIF, FIMC_IS_SN_MAX);
 				pm_qos_update_request(&exynos_isp_qos_mem, mif_qos);
-				info("[REMOSAIC][%d]: setting to max MIF(%d)\n", frame->shot_ext->setfile, mif_qos);
+				info("[REMOSAIC]: setting to max MIF(%d)\n", mif_qos);
 			}
 #endif
 		}
@@ -3113,17 +3065,6 @@ p_skip_sync:
 	return ret;
 
 p_err_ignore:
-	child = group->child;
-	while (child) {
-		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state))
-			break;
-
-		gtask_child = &groupmgr->gtask[child->id];
-		if (try_gdown[child->id])
-			up(&gtask_child->smp_resource);
-		child = child->child;
-	}
-
 	if (try_sdown)
 		smp_shot_inc(group);
 
@@ -3137,18 +3078,6 @@ p_err_ignore:
 
 p_err_cancel:
 	fimc_is_group_cancel(group, frame);
-
-	child = group->child;
-	while (child) {
-		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state))
-			break;
-
-		gtask_child = &groupmgr->gtask[child->id];
-		if (try_gdown[child->id])
-			up(&gtask_child->smp_resource);
-
-		child = child->child;
-	}
 
 	if (try_sdown)
 		smp_shot_inc(group);
@@ -3177,7 +3106,6 @@ int fimc_is_group_done(struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_group *child;
 #endif
 	ulong flags;
-	struct fimc_is_group_task *gtask_child;
 
 	BUG_ON(!groupmgr);
 	BUG_ON(!group);
@@ -3242,8 +3170,8 @@ int fimc_is_group_done(struct fimc_is_groupmgr *groupmgr,
 	if (unlikely((done_state != VB2_BUF_STATE_DONE) && gnext)) {
 		spin_lock_irqsave(&gframemgr->gframe_slock, flags);
 
-		gframe = fimc_is_gframe_group_find(gnext, frame->fcount);
-		if (gframe) {
+		fimc_is_gframe_group_head(gnext, &gframe);
+		if (gframe && (gframe->fcount == frame->fcount)) {
 			ret = fimc_is_gframe_trans_grp_to_fre(gframemgr, gframe, gnext);
 			if (ret) {
 				mgerr("fimc_is_gframe_trans_grp_to_fre is fail(%d)", device, gnext, ret);
@@ -3254,18 +3182,6 @@ int fimc_is_group_done(struct fimc_is_groupmgr *groupmgr,
 		spin_unlock_irqrestore(&gframemgr->gframe_slock, flags);
 	}
 
-	child = group->child;
-	while (child) {
-		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state))
-			break;
-
-		gtask_child = &groupmgr->gtask[child->id];
-		child = child->child;
-		if (!test_bit(FIMC_IS_GTASK_START, &gtask_child->state))
-			continue;
-
-		up(&gtask_child->smp_resource);
-	}
 	smp_shot_inc(group);
 	up(&gtask->smp_resource);
 
