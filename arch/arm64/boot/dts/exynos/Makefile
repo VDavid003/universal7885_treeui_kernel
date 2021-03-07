@@ -13,7 +13,12 @@ dtb-y := \
 	exynos7885-jackpotlte_can_open_04.dtb \
 	exynos7885-jackpotlte_can_open_05.dtb \
 	exynos7885-jackpotlte_can_open_06.dtb \
-	exynos7885-jackpotlte_can_open_07.dtb
+	exynos7885-jackpotlte_can_open_07.dtb \
+	exynos7885-jackpotlte_kor_03.dtb \
+	exynos7885-jackpotlte_kor_04.dtb \
+	exynos7885-jackpotlte_kor_05.dtb \
+	exynos7885-jackpotlte_kor_06.dtb \
+	exynos7885-jackpotlte_kor_07.dtb
 
 always            := $(dtb-y) $(dtbo-y)
 clean-files       := *.dtb*
