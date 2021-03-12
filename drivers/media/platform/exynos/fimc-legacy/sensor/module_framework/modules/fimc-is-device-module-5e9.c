@@ -572,7 +572,7 @@ static int sensor_module_5e9_power_setpin_with_otp(struct device *dev,
 	return 0;
 }
 
-static int __init sensor_module_5e9_probe(struct platform_device *pdev)
+static int sensor_module_5e9_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	unsigned int use_cal_memory = 0;
