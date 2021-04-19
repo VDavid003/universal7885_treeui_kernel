@@ -44,7 +44,7 @@ int kbase_platform_dvfs_event(struct kbase_device *kbdev, u32 utilisation)
 	if (gpu_control_is_power_on(kbdev)) {
 		int clk = 0;
 		gpu_dvfs_calculate_env_data(kbdev);
-		clk = gpu_dvfs_decide_next_freq(kbdev, platform->env_data.utilization);
+		clk = 1100000;//gpu_dvfs_decide_next_freq(kbdev, platform->env_data.utilization);
 		gpu_set_target_clk_vol(clk, true);
 	}
 	mutex_unlock(&platform->gpu_dvfs_handler_lock);
